@@ -181,7 +181,7 @@ class CSVFormatter(OutputFormatter):
         """
         Format compilation order as CSV.
 
-        Columns: Order, Source URL, Package Name, Version/Tag
+        Columns: Order, Group ID, Package Name, Version/Tag, Source URL
 
         Args:
             order: List of component identifiers in compilation order
@@ -197,17 +197,20 @@ class CSVFormatter(OutputFormatter):
         writer = csv.writer(output)
 
         # Write header
-        writer.writerow(["Order", "Source URL", "Package Name", "Version/Tag"])
+        writer.writerow(["Order", "Group ID", "Package Name", "Version/Tag", "Source URL"])
 
         # Write data rows
         for idx, comp_ref in enumerate(order, 1):
             comp = components.get(comp_ref)
             if comp:
-                # Get package name (group:name or just name)
+                # Get Group ID (group:name format)
                 if comp.group:
-                    package_name = f"{comp.group}:{comp.name}"
+                    group_id = f"{comp.group}:{comp.name}"
                 else:
-                    package_name = comp.name
+                    group_id = comp.name
+
+                # Get package name (just the name part)
+                package_name = comp.name
 
                 # Get version/tag
                 version_tag = comp.version if comp.version else ""
@@ -215,10 +218,10 @@ class CSVFormatter(OutputFormatter):
                 # Get source URL
                 source_url = comp.source_url if hasattr(comp, "source_url") else ""
 
-                writer.writerow([idx, source_url, package_name, version_tag])
+                writer.writerow([idx, group_id, package_name, version_tag, source_url])
             else:
-                # Component not found, use ref as package name
-                writer.writerow([idx, "", comp_ref, ""])
+                # Component not found, use ref as group ID
+                writer.writerow([idx, comp_ref, "", "", ""])
 
         return output.getvalue()
 

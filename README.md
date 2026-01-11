@@ -154,18 +154,19 @@ Order:
 
 **CSV Format:**
 ```csv
-Order,Source URL,Package Name,Version/Tag
-1,https://github.com/example/base.git,org.example:base,0.5.0
-2,https://github.com/example/core.git,org.example:core,1.0.0
-3,https://github.com/example/utils.git,org.example:utils,2.0.0
-4,https://github.com/example/api.git,org.example:api,3.0.0
+Order,Group ID,Package Name,Version/Tag,Source URL
+1,org.example:base,base,0.5.0,https://github.com/example/base.git
+2,org.example:core,core,1.0.0,https://github.com/example/core.git
+3,org.example:utils,utils,2.0.0,https://github.com/example/utils.git
+4,org.example:api,api,3.0.0,https://github.com/example/api.git
 ```
 
 The CSV format includes:
 - **Order**: Compilation order number (1, 2, 3, ...)
-- **Source URL**: Source repository URL from SBOM external references (if available)
-- **Package Name**: Package identifier (group:name format)
+- **Group ID**: Package identifier in group:name format
+- **Package Name**: Package name only (without group)
 - **Version/Tag**: Version or tag to use when checking out/cloning
+- **Source URL**: Source repository URL from SBOM external references (if available)
 
 ## How It Works
 

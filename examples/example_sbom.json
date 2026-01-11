@@ -23,7 +23,14 @@
       "name": "core",
       "group": "org.example",
       "version": "1.0.0",
-      "purl": "pkg:maven/org.example/core@1.0.0"
+      "purl": "pkg:maven/org.example/core@1.0.0",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/example/core.git",
+          "comment": "Git repository"
+        }
+      ]
     },
     {
       "bom-ref": "pkg:maven/org.example/utils@2.0.0",
@@ -31,7 +38,14 @@
       "name": "utils",
       "group": "org.example",
       "version": "2.0.0",
-      "purl": "pkg:maven/org.example/utils@2.0.0"
+      "purl": "pkg:maven/org.example/utils@2.0.0",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/example/utils.git",
+          "comment": "Git repository"
+        }
+      ]
     },
     {
       "bom-ref": "pkg:maven/org.example/api@3.0.0",
@@ -39,7 +53,14 @@
       "name": "api",
       "group": "org.example",
       "version": "3.0.0",
-      "purl": "pkg:maven/org.example/api@3.0.0"
+      "purl": "pkg:maven/org.example/api@3.0.0",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/example/api.git",
+          "comment": "Git repository"
+        }
+      ]
     },
     {
       "bom-ref": "pkg:maven/org.example/base@0.5.0",
@@ -47,7 +68,14 @@
       "name": "base",
       "group": "org.example",
       "version": "0.5.0",
-      "purl": "pkg:maven/org.example/base@0.5.0"
+      "purl": "pkg:maven/org.example/base@0.5.0",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/example/base.git",
+          "comment": "Git repository"
+        }
+      ]
     }
   ],
   "dependencies": [

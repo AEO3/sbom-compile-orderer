@@ -1,9 +1,11 @@
 """
 Output formatters for compilation order.
 
-Provides different output formats: text, JSON, etc.
+Provides different output formats: text, JSON, CSV, etc.
 """
 
+import csv
+import io
 import json
 from typing import Dict, List, Optional
 
@@ -165,6 +167,62 @@ class JSONFormatter(OutputFormatter):
         return json.dumps(output, indent=2)
 
 
+class CSVFormatter(OutputFormatter):
+    """CSV-based output formatter."""
+
+    def format(
+        self,
+        order: List[str],
+        components: Dict[str, Component],
+        has_circular: bool,
+        statistics: Optional[Dict] = None,
+        include_metadata: bool = False,
+    ) -> str:
+        """
+        Format compilation order as CSV.
+
+        Columns: Order, Source URL, Package Name, Version/Tag
+
+        Args:
+            order: List of component identifiers in compilation order
+            components: Dictionary of all components
+            has_circular: Whether circular dependencies were detected
+            statistics: Optional graph statistics (not used in CSV)
+            include_metadata: Whether to include component metadata (not used in CSV)
+
+        Returns:
+            Formatted CSV string
+        """
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        # Write header
+        writer.writerow(["Order", "Source URL", "Package Name", "Version/Tag"])
+
+        # Write data rows
+        for idx, comp_ref in enumerate(order, 1):
+            comp = components.get(comp_ref)
+            if comp:
+                # Get package name (group:name or just name)
+                if comp.group:
+                    package_name = f"{comp.group}:{comp.name}"
+                else:
+                    package_name = comp.name
+
+                # Get version/tag
+                version_tag = comp.version if comp.version else ""
+
+                # Get source URL
+                source_url = comp.source_url if hasattr(comp, "source_url") else ""
+
+                writer.writerow([idx, source_url, package_name, version_tag])
+            else:
+                # Component not found, use ref as package name
+                writer.writerow([idx, "", comp_ref, ""])
+
+        return output.getvalue()
+
+
 def get_formatter(format_type: str) -> OutputFormatter:
     """
     Get a formatter by type name.
@@ -181,6 +239,7 @@ def get_formatter(format_type: str) -> OutputFormatter:
     formatters = {
         "text": TextFormatter(),
         "json": JSONFormatter(),
+        "csv": CSVFormatter(),
     }
 
     if format_type.lower() not in formatters:

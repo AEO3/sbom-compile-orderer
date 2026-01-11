@@ -1,0 +1,14 @@
+# Include README and license files
+include README.md
+include LICENSE
+include USAGE.md
+
+# Include example files
+include example_sbom.json
+
+# Include requirements files
+include requirements.txt
+include requirements-dev.txt
+
+# Include all Python files
+recursive-include sbom_compile_order *.py

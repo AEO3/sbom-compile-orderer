@@ -27,6 +27,38 @@ class Component:
         self.type = component_data.get("type", "library")
         self.scope = component_data.get("scope", "required")
         self.raw_data = component_data
+        self.source_url = self._extract_source_url(component_data)
+
+    def _extract_source_url(self, component_data: Dict) -> str:
+        """
+        Extract source URL from component external references.
+
+        Looks for VCS (version control system) URLs first, then other types.
+
+        Args:
+            component_data: Dictionary containing component information
+
+        Returns:
+            Source URL string, or empty string if not found
+        """
+        external_refs = component_data.get("externalReferences", [])
+        if not external_refs:
+            return ""
+
+        # Prefer VCS URLs (version control system)
+        for ref in external_refs:
+            ref_type = ref.get("type", "").lower()
+            ref_url = ref.get("url", "")
+            if ref_type == "vcs" and ref_url:
+                return ref_url
+
+        # Fall back to other URL types (website, distribution, etc.)
+        for ref in external_refs:
+            ref_url = ref.get("url", "")
+            if ref_url:
+                return ref_url
+
+        return ""
 
     def get_identifier(self) -> str:
         """

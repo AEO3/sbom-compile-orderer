@@ -9,7 +9,7 @@ A Python application that analyses CycloneDX SBOM (Software Bill of Materials) f
 - ✅ **Transitive Dependency Handling**: Automatically includes dependencies of dependencies
 - ✅ **Topological Sorting**: Determines optimal compilation order using graph algorithms
 - ✅ **Circular Dependency Detection**: Identifies and handles circular dependencies gracefully
-- ✅ **Multiple Output Formats**: Supports both human-readable text and machine-readable JSON output
+- ✅ **Multiple Output Formats**: Supports human-readable text, machine-readable JSON, and CSV output
 - ✅ **Component Metadata**: Optional inclusion of full component metadata in output
 
 ## Installation
@@ -19,7 +19,7 @@ A Python application that analyses CycloneDX SBOM (Software Bill of Materials) f
 - Python 3.12 or higher
 - pip (Python package manager)
 
-### Install from Source
+### Install from Source (Editable Mode)
 
 ```bash
 cd sbom-compile-order
@@ -28,13 +28,53 @@ pip install -e .
 
 This will install the tool and make the `sbom-compile-order` command available in your PATH.
 
+### Install from Source (Regular Install)
+
+```bash
+cd sbom-compile-order
+pip install .
+```
+
+### Install from Requirements File
+
+```bash
+cd sbom-compile-order
+pip install -r requirements.txt
+pip install -e .
+```
+
+### Install with Development Dependencies
+
+```bash
+cd sbom-compile-order
+pip install -e ".[dev]"
+# Or using requirements file:
+pip install -r requirements-dev.txt
+```
+
 ### Install Dependencies Only
 
 If you prefer to run the tool directly without installation:
 
 ```bash
 cd sbom-compile-order
-pip install networkx
+pip install -r requirements.txt
+```
+
+### Build Distribution Packages
+
+To build wheel and source distribution packages:
+
+```bash
+cd sbom-compile-order
+pip install build
+python -m build
+```
+
+This will create `dist/` directory with `.whl` and `.tar.gz` files that can be installed via pip:
+
+```bash
+pip install dist/sbom_compile_order-1.0.0-py3-none-any.whl
 ```
 
 ## Quick Start
@@ -45,6 +85,9 @@ sbom-compile-order example_sbom.json
 
 # Output to file in JSON format
 sbom-compile-order example_sbom.json -o compile-order.json -f json
+
+# Output to CSV file with source URLs
+sbom-compile-order example_sbom.json -o compile-order.csv -f csv
 
 # Verbose output with full metadata
 sbom-compile-order example_sbom.json -v --include-metadata
@@ -62,7 +105,7 @@ Arguments:
 
 Options:
   -o, --output FILE         Output file path (default: stdout)
-  -f, --format FORMAT       Output format: text or json (default: text)
+  -f, --format FORMAT       Output format: text, json, or csv (default: text)
   -v, --verbose             Enable verbose output
   --include-metadata         Include component metadata in output
   -h, --help                Show help message
@@ -108,6 +151,21 @@ Order:
   }
 }
 ```
+
+**CSV Format:**
+```csv
+Order,Source URL,Package Name,Version/Tag
+1,https://github.com/example/base.git,org.example:base,0.5.0
+2,https://github.com/example/core.git,org.example:core,1.0.0
+3,https://github.com/example/utils.git,org.example:utils,2.0.0
+4,https://github.com/example/api.git,org.example:api,3.0.0
+```
+
+The CSV format includes:
+- **Order**: Compilation order number (1, 2, 3, ...)
+- **Source URL**: Source repository URL from SBOM external references (if available)
+- **Package Name**: Package identifier (group:name format)
+- **Version/Tag**: Version or tag to use when checking out/cloning
 
 ## How It Works
 

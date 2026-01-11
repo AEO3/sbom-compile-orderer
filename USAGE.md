@@ -93,11 +93,31 @@ Order:
 }
 ```
 
+### CSV Format
+```csv
+Order,Source URL,Package Name,Version/Tag
+1,https://github.com/example/base.git,org.example:base,0.5.0
+2,https://github.com/example/core.git,org.example:core,1.0.0
+3,https://github.com/example/utils.git,org.example:utils,2.0.0
+4,https://github.com/example/api.git,org.example:api,3.0.0
+```
+
+The CSV format is particularly useful for:
+- Importing into spreadsheets for analysis
+- Scripting build processes
+- Tracking source URLs and versions for compilation
+
+**CSV Columns:**
+- **Order**: Sequential compilation order number
+- **Source URL**: Source repository URL extracted from SBOM external references (VCS URLs preferred)
+- **Package Name**: Full package identifier (group:name format)
+- **Version/Tag**: Version or tag to use when checking out the source code
+
 ## Command-Line Options
 
 - `sbom_file`: Path to the CycloneDX SBOM JSON file (required)
 - `-o, --output FILE`: Output file path (default: stdout)
-- `-f, --format FORMAT`: Output format: `text` or `json` (default: `text`)
+- `-f, --format FORMAT`: Output format: `text`, `json`, or `csv` (default: `text`)
 - `-v, --verbose`: Enable verbose output showing progress
 - `--include-metadata`: Include full component metadata in output
 

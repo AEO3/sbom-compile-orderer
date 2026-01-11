@@ -39,8 +39,8 @@ def main() -> None:
         "--format",
         type=str,
         default="text",
-        choices=["text", "json"],
-        help="Output format: text or json (default: text)",
+        choices=["text", "json", "csv"],
+        help="Output format: text, json, or csv (default: text)",
     )
 
     parser.add_argument(

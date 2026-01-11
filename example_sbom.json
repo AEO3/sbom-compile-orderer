@@ -1,0 +1,74 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2024-01-01T00:00:00Z",
+    "tools": [
+      {
+        "name": "Example SBOM Generator",
+        "version": "1.0"
+      }
+    ],
+    "component": {
+      "type": "application",
+      "name": "example-app",
+      "version": "1.0.0"
+    }
+  },
+  "components": [
+    {
+      "bom-ref": "pkg:maven/org.example/core@1.0.0",
+      "type": "library",
+      "name": "core",
+      "group": "org.example",
+      "version": "1.0.0",
+      "purl": "pkg:maven/org.example/core@1.0.0"
+    },
+    {
+      "bom-ref": "pkg:maven/org.example/utils@2.0.0",
+      "type": "library",
+      "name": "utils",
+      "group": "org.example",
+      "version": "2.0.0",
+      "purl": "pkg:maven/org.example/utils@2.0.0"
+    },
+    {
+      "bom-ref": "pkg:maven/org.example/api@3.0.0",
+      "type": "library",
+      "name": "api",
+      "group": "org.example",
+      "version": "3.0.0",
+      "purl": "pkg:maven/org.example/api@3.0.0"
+    },
+    {
+      "bom-ref": "pkg:maven/org.example/base@0.5.0",
+      "type": "library",
+      "name": "base",
+      "group": "org.example",
+      "version": "0.5.0",
+      "purl": "pkg:maven/org.example/base@0.5.0"
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:maven/org.example/api@3.0.0",
+      "dependsOn": [
+        "pkg:maven/org.example/core@1.0.0",
+        "pkg:maven/org.example/utils@2.0.0"
+      ]
+    },
+    {
+      "ref": "pkg:maven/org.example/utils@2.0.0",
+      "dependsOn": [
+        "pkg:maven/org.example/base@0.5.0"
+      ]
+    },
+    {
+      "ref": "pkg:maven/org.example/core@1.0.0",
+      "dependsOn": [
+        "pkg:maven/org.example/base@0.5.0"
+      ]
+    }
+  ]
+}

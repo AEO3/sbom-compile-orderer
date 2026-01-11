@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sbom-compile-order"
+version = "1.0.0"
+description = "Analyse CycloneDX SBOM files to determine compilation order for all dependencies"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+    {name = "SBOM Compile Order Tool"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "networkx>=3.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pylint>=3.0.0",
+    "black>=23.0.0",
+]
+
+[project.scripts]
+sbom-compile-order = "sbom_compile_order.cli:main"
+
+[tool.setuptools]
+packages = ["sbom_compile_order"]
+
+[tool.pylint.main]
+max-line-length = 100
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]

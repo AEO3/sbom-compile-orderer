@@ -8,6 +8,7 @@ import csv
 import io
 import json
 import re
+from pathlib import Path
 from typing import Dict, List, Optional, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs
 
@@ -331,7 +332,7 @@ class CSVFormatter(OutputFormatter):
         """
         Format compilation order as CSV.
 
-        Columns: Order, Group ID, Package Name, Version/Tag, Provided URL, Repo URL, Dependencies, POM
+        Columns: Order, Group ID, Package Name, Version/Tag, Provided URL, Repo URL, Dependencies, POM, AUTH
 
         Args:
             order: List of component identifiers in compilation order
@@ -359,6 +360,7 @@ class CSVFormatter(OutputFormatter):
                 "Repo URL",
                 "Dependencies",
                 "POM",
+                "AUTH",
             ]
         )
 
@@ -385,7 +387,7 @@ class CSVFormatter(OutputFormatter):
         """
         Format compilation order as CSV, writing incrementally to file.
 
-        Columns: Order, Group ID, Package Name, Version/Tag, Provided URL, Repo URL, Dependencies, POM
+        Columns: Order, Group ID, Package Name, Version/Tag, Provided URL, Repo URL, Dependencies, POM, AUTH
 
         Args:
             output_path: Path to output CSV file
@@ -417,6 +419,7 @@ class CSVFormatter(OutputFormatter):
                         "Repo URL",
                         "Dependencies",
                         "POM",
+                        "AUTH",
                     ]
                 )
 
@@ -479,11 +482,15 @@ class CSVFormatter(OutputFormatter):
 
             # Download POM if downloader provided
             pom_filename = ""
+            auth_required = ""
             if pom_downloader and repo_url:
                 try:
-                    pom_filename = pom_downloader.download_pom(comp, repo_url) or ""
+                    pom_result, auth_req = pom_downloader.download_pom(comp, repo_url)
+                    pom_filename = pom_result or ""
+                    auth_required = "AUTH" if auth_req else ""
                 except Exception:  # pylint: disable=broad-exception-caught
                     pom_filename = ""
+                    auth_required = ""
 
             return [
                 idx,
@@ -494,6 +501,7 @@ class CSVFormatter(OutputFormatter):
                 repo_url,
                 dependency_count,
                 pom_filename,
+                auth_required,
             ]
         else:
             # Component not found, use ref as group ID
@@ -503,7 +511,7 @@ class CSVFormatter(OutputFormatter):
                     dependency_count = len(list(graph.predecessors(comp_ref)))
                 except Exception:  # pylint: disable=broad-exception-caught
                     dependency_count = 0
-            return [idx, comp_ref, "", "", "", "", dependency_count, ""]
+            return [idx, comp_ref, "", "", "", "", dependency_count, "", ""]
 
 
 def get_formatter(format_type: str) -> OutputFormatter:

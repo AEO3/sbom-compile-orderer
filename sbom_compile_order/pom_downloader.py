@@ -12,8 +12,10 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 from urllib.parse import urlparse
+from urllib.request import urlopen, Request
+from urllib.error import URLError, HTTPError
 
 from sbom_compile_order.parser import Component
 
@@ -21,19 +23,22 @@ from sbom_compile_order.parser import Component
 class POMDownloader:
     """Downloads and caches POM files from git repositories."""
 
-    def __init__(self, cache_dir: Path, verbose: bool = False) -> None:
+    def __init__(self, cache_dir: Path, verbose: bool = False, clone_repos: bool = False) -> None:
         """
         Initialize the POM downloader.
 
         Args:
             cache_dir: Directory to cache downloaded POM files
             verbose: Enable verbose output
+            clone_repos: If True, clone repositories. If False, download POMs directly via HTTP
         """
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.verbose = verbose
+        self.clone_repos = clone_repos
         self.repo_cache_dir = self.cache_dir / "repos"
-        self.repo_cache_dir.mkdir(parents=True, exist_ok=True)
+        if self.clone_repos:
+            self.repo_cache_dir.mkdir(parents=True, exist_ok=True)
         self.pom_cache_dir = self.cache_dir / "poms"
         self.pom_cache_dir.mkdir(parents=True, exist_ok=True)
         self.log_file = self.cache_dir / "sbom-compile-order.log"
@@ -77,7 +82,32 @@ class POMDownloader:
         repo_name = re.sub(r"[^a-zA-Z0-9._-]", "_", repo_name)
         return repo_name
 
-    def _clone_or_update_repo(self, repo_url: str) -> Optional[Path]:
+    def _is_auth_required(self, error_output: str) -> bool:
+        """
+        Check if error output indicates authentication is required.
+
+        Args:
+            error_output: Error output from git command
+
+        Returns:
+            True if authentication appears to be required
+        """
+        error_lower = error_output.lower()
+        auth_indicators = [
+            "authentication failed",
+            "permission denied",
+            "access denied",
+            "unauthorized",
+            "401",
+            "403",
+            "could not read username",
+            "could not read password",
+            "repository not found",  # Often means private repo
+            "fatal: could not read",
+        ]
+        return any(indicator in error_lower for indicator in auth_indicators)
+
+    def _clone_or_update_repo(self, repo_url: str) -> Tuple[Optional[Path], bool]:
         """
         Clone or update a git repository.
 
@@ -85,7 +115,7 @@ class POMDownloader:
             repo_url: Git repository URL
 
         Returns:
-            Path to cloned repository, or None if failed
+            Tuple of (Path to cloned repository or None if failed, auth_required bool)
         """
         repo_name = self._get_repo_name_from_url(repo_url)
         repo_path = self.repo_cache_dir / repo_name
@@ -102,6 +132,9 @@ class POMDownloader:
                     timeout=60,
                 )
                 if result.returncode != 0:
+                    if self._is_auth_required(result.stderr):
+                        self._log(f"Authentication required for {repo_url}")
+                        return None, True
                     self._log(f"Warning: Failed to update {repo_url}, using cached version")
             else:
                 # Clone the repository
@@ -113,19 +146,22 @@ class POMDownloader:
                     timeout=120,
                 )
                 if result.returncode != 0:
+                    if self._is_auth_required(result.stderr):
+                        self._log(f"Authentication required for {repo_url}")
+                        return None, True
                     self._log(f"Error cloning {repo_url}: {result.stderr}")
-                    return None
+                    return None, False
 
-            return repo_path
+            return repo_path, False
         except subprocess.TimeoutExpired:
             self._log(f"Timeout cloning/updating {repo_url}")
-            return None
+            return None, False
         except FileNotFoundError:
             self._log("Error: git command not found. Please install git.")
-            return None
+            return None, False
         except Exception as exc:  # pylint: disable=broad-exception-caught
             self._log(f"Error accessing repository {repo_url}: {exc}")
-            return None
+            return None, False
 
     def _find_pom_in_repo(
         self, repo_path: Path, package_name: str, group_id: Optional[str] = None
@@ -258,9 +294,89 @@ class POMDownloader:
 
         return False
 
+    def _get_raw_pom_urls(self, repo_url: str, package_name: str, group_id: Optional[str] = None) -> list[str]:
+        """
+        Generate possible raw POM URLs for a repository.
+
+        Args:
+            repo_url: Git repository URL
+            package_name: Package name
+            group_id: Optional group ID
+
+        Returns:
+            List of possible raw POM URLs to try
+        """
+        urls = []
+        parsed = urlparse(repo_url)
+
+        # Common branches to try
+        branches = ["master", "main", "develop", "trunk"]
+
+        # GitHub
+        if "github.com" in parsed.netloc.lower():
+            match = re.match(r"^/([^/]+)/([^/]+)", parsed.path)
+            if match:
+                user = match.group(1)
+                repo = match.group(2).rstrip(".git")
+                for branch in branches:
+                    # Root POM
+                    urls.append(f"https://raw.githubusercontent.com/{user}/{repo}/{branch}/pom.xml")
+                    # Package-specific POM (common patterns)
+                    urls.append(f"https://raw.githubusercontent.com/{user}/{repo}/{branch}/{package_name}/pom.xml")
+                    if group_id and ":" in group_id:
+                        group = group_id.split(":")[0]
+                        # Try group path structure
+                        group_path = group.replace(".", "/")
+                        urls.append(f"https://raw.githubusercontent.com/{user}/{repo}/{branch}/{group_path}/{package_name}/pom.xml")
+
+        # GitLab
+        elif "gitlab.com" in parsed.netloc.lower() or "gitlab" in parsed.netloc.lower():
+            match = re.match(r"^/([^/]+)/([^/]+)", parsed.path)
+            if match:
+                user = match.group(1)
+                repo = match.group(2).rstrip(".git")
+                for branch in branches:
+                    urls.append(f"https://{parsed.netloc}/{user}/{repo}/-/raw/{branch}/pom.xml")
+                    urls.append(f"https://{parsed.netloc}/{user}/{repo}/-/raw/{branch}/{package_name}/pom.xml")
+
+        # Bitbucket
+        elif "bitbucket.org" in parsed.netloc.lower():
+            match = re.match(r"^/([^/]+)/([^/]+)", parsed.path)
+            if match:
+                user = match.group(1)
+                repo = match.group(2).rstrip(".git")
+                for branch in branches:
+                    urls.append(f"https://bitbucket.org/{user}/{repo}/raw/{branch}/pom.xml")
+                    urls.append(f"https://bitbucket.org/{user}/{repo}/raw/{branch}/{package_name}/pom.xml")
+
+        return urls
+
+    def _download_pom_direct(self, pom_url: str) -> Tuple[Optional[bytes], bool]:
+        """
+        Download a POM file directly via HTTP.
+
+        Args:
+            pom_url: URL to the POM file
+
+        Returns:
+            Tuple of (POM file content as bytes or None if failed, auth_required bool)
+        """
+        try:
+            req = Request(pom_url)
+            req.add_header("User-Agent", "sbom-compile-order/1.1.1")
+            with urlopen(req, timeout=10) as response:
+                if response.status == 200:
+                    return response.read(), False
+        except HTTPError as exc:
+            if exc.code in [401, 403]:
+                return None, True  # Auth required
+        except (URLError, Exception):  # pylint: disable=broad-exception-caught
+            pass
+        return None, False
+
     def download_pom(
         self, component: Component, repo_url: str
-    ) -> Optional[str]:
+    ) -> Tuple[Optional[str], bool]:
         """
         Download POM file for a component.
 
@@ -269,10 +385,10 @@ class POMDownloader:
             repo_url: Git repository URL
 
         Returns:
-            Filename of cached POM file, or None if not found
+            Tuple of (filename of cached POM file or None if not found, auth_required bool)
         """
         if not repo_url:
-            return None
+            return None, False
 
         # Create a cache key based on component identifier
         cache_key = component.get_identifier().replace("/", "_").replace(":", "_")
@@ -281,26 +397,93 @@ class POMDownloader:
         # Check if already cached
         if cached_pom.exists():
             self._log(f"Using cached POM for {component.name}")
-            return cached_pom.name
+            return cached_pom.name, False
 
-        # Clone or update repository
-        repo_path = self._clone_or_update_repo(repo_url)
-        if not repo_path:
-            return None
-
-        # Find POM file
         # Extract group_id from component
         group_id = f"{component.group}:{component.name}" if component.group else component.name
-        pom_path = self._find_pom_in_repo(repo_path, component.name, group_id)
 
-        if pom_path and pom_path.exists():
-            # Copy POM to cache
-            try:
-                shutil.copy2(pom_path, cached_pom)
-                self._log(f"Cached POM: {cached_pom.name}")
-                return cached_pom.name
-            except Exception as exc:  # pylint: disable=broad-exception-caught
-                self._log(f"Error caching POM: {exc}")
-                return None
+        if self.clone_repos:
+            # Clone repository approach
+            repo_path, auth_required = self._clone_or_update_repo(repo_url)
+            if auth_required:
+                return None, True
+            if not repo_path:
+                return None, False
 
-        return None
+            # Find POM file
+            pom_path = self._find_pom_in_repo(repo_path, component.name, group_id)
+
+            if pom_path and pom_path.exists():
+                # Copy POM to cache
+                try:
+                    shutil.copy2(pom_path, cached_pom)
+                    self._log(f"Cached POM: {cached_pom.name}")
+                    return cached_pom.name, False
+                except Exception as exc:  # pylint: disable=broad-exception-caught
+                    self._log(f"Error caching POM: {exc}")
+                    return None, False
+        else:
+            # Direct download approach
+            pom_urls = self._get_raw_pom_urls(repo_url, component.name, group_id)
+            auth_detected = False
+            for pom_url in pom_urls:
+                self._log(f"Trying to download POM from: {pom_url}")
+                pom_content, auth_required = self._download_pom_direct(pom_url)
+                if auth_required:
+                    auth_detected = True
+                    continue  # Try next URL
+                if pom_content:
+                    try:
+                        # Verify it's a valid POM by checking for XML and artifactId
+                        pom_text = pom_content.decode("utf-8", errors="ignore")
+                        if "<?xml" in pom_text and "<artifactId>" in pom_text:
+                            # Check if it matches the package
+                            if self._pom_content_matches(pom_text, component.name, group_id):
+                                with open(cached_pom, "wb") as f:
+                                    f.write(pom_content)
+                                self._log(f"Cached POM: {cached_pom.name}")
+                                return cached_pom.name, False
+                    except Exception as exc:  # pylint: disable=broad-exception-caught
+                        self._log(f"Error processing downloaded POM: {exc}")
+                        continue
+
+            # If we detected auth requirements, return auth_required=True
+            if auth_detected:
+                return None, True
+
+        return None, False
+
+    def _pom_content_matches(
+        self, pom_content: str, package_name: str, group_id: Optional[str] = None
+    ) -> bool:
+        """
+        Check if POM content matches the package.
+
+        Args:
+            pom_content: POM file content as string
+            package_name: Expected package name
+            group_id: Optional group ID (group:name format)
+
+        Returns:
+            True if POM matches the package
+        """
+        try:
+            # Extract artifactId from POM
+            artifact_match = re.search(r"<artifactId>([^<]+)</artifactId>", pom_content)
+            if artifact_match:
+                artifact_id = artifact_match.group(1).strip()
+                if artifact_id.lower() == package_name.lower():
+                    # If group_id provided, also check groupId
+                    if group_id:
+                        group_match = re.search(r"<groupId>([^<]+)</groupId>", pom_content)
+                        if group_match:
+                            pom_group = group_match.group(1).strip()
+                            # Extract group from group_id (format: group:name)
+                            expected_group = group_id.split(":")[0] if ":" in group_id else group_id
+                            if pom_group.lower() != expected_group.lower():
+                                return False
+                    return True
+        except Exception:  # pylint: disable=broad-exception-caught
+            pass
+
+        return False

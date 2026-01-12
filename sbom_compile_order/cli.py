@@ -76,10 +76,24 @@ def main() -> None:
         help="Include component metadata in output",
     )
 
+    parser.add_argument(
+        "--ignore-group-ids",
+        type=str,
+        nargs="+",
+        default=[],
+        help="Group IDs to ignore (e.g., --ignore-group-ids com.example org.test)",
+    )
+
+    parser.add_argument(
+        "--clone-repos",
+        action="store_true",
+        help="Clone repositories to find POM files (default: download POMs directly via HTTP)",
+    )
+
     args = parser.parse_args()
 
-    # Set up log file
-    cache_dir = Path("cache")
+    # Set up cache directory in current working directory
+    cache_dir = Path.cwd() / "cache"
     log_file = cache_dir / "sbom-compile-order.log"
 
     try:
@@ -95,6 +109,28 @@ def main() -> None:
 
         components = sbom_parser.get_all_components()
         dependencies = sbom_parser.get_dependencies()
+
+        # Filter out ignored group IDs
+        if args.ignore_group_ids:
+            ignored_set = set(args.ignore_group_ids)
+            original_count = len(components)
+            components = {
+                comp_id: comp
+                for comp_id, comp in components.items()
+                if not comp.group or comp.group not in ignored_set
+            }
+            # Also filter dependencies
+            dependencies = {
+                dep_ref: dep_list
+                for dep_ref, dep_list in dependencies.items()
+                if dep_ref in components
+            }
+            filtered_count = original_count - len(components)
+            if filtered_count > 0:
+                log_msg = f"Filtered out {filtered_count} components with ignored group IDs: {', '.join(ignored_set)}"
+                _log_to_file(log_msg, log_file)
+                if args.verbose:
+                    print(log_msg, file=sys.stderr)
 
         log_msg = (
             f"Found {len(components)} components and "
@@ -135,8 +171,11 @@ def main() -> None:
         # Initialize POM downloader for CSV format
         pom_downloader = None
         if args.format == "csv":
-            pom_downloader = POMDownloader(cache_dir, verbose=args.verbose)
-            log_msg = f"POM cache directory: {cache_dir}"
+            pom_downloader = POMDownloader(
+                cache_dir, verbose=args.verbose, clone_repos=args.clone_repos
+            )
+            mode = "clone repositories" if args.clone_repos else "download POMs directly"
+            log_msg = f"POM cache directory: {cache_dir} (mode: {mode})"
             _log_to_file(log_msg, log_file)
             if args.verbose:
                 print(log_msg, file=sys.stderr)

@@ -110,6 +110,7 @@ def main() -> None:
             has_circular,
             statistics,
             args.include_metadata,
+            graph.graph if args.format == "csv" else None,
         )
 
         # Write output

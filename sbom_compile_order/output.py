@@ -7,9 +7,12 @@ Provides different output formats: text, JSON, CSV, etc.
 import csv
 import io
 import json
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
 
 from sbom_compile_order.parser import Component
+
+if TYPE_CHECKING:
+    import networkx as nx
 
 
 class OutputFormatter:
@@ -22,6 +25,7 @@ class OutputFormatter:
         has_circular: bool,
         statistics: Optional[Dict] = None,
         include_metadata: bool = False,
+        graph: Optional["nx.DiGraph"] = None,
     ) -> str:
         """
         Format the compilation order.
@@ -32,6 +36,7 @@ class OutputFormatter:
             has_circular: Whether circular dependencies were detected
             statistics: Optional graph statistics
             include_metadata: Whether to include component metadata
+            graph: Optional dependency graph for counting dependencies
 
         Returns:
             Formatted string
@@ -49,6 +54,7 @@ class TextFormatter(OutputFormatter):
         has_circular: bool,
         statistics: Optional[Dict] = None,
         include_metadata: bool = False,
+        graph: Optional["nx.DiGraph"] = None,
     ) -> str:
         """
         Format compilation order as text.
@@ -59,6 +65,7 @@ class TextFormatter(OutputFormatter):
             has_circular: Whether circular dependencies were detected
             statistics: Optional graph statistics
             include_metadata: Whether to include component metadata
+            graph: Optional dependency graph (not used in text format)
 
         Returns:
             Formatted text string
@@ -118,6 +125,7 @@ class JSONFormatter(OutputFormatter):
         has_circular: bool,
         statistics: Optional[Dict] = None,
         include_metadata: bool = False,
+        graph: Optional["nx.DiGraph"] = None,
     ) -> str:
         """
         Format compilation order as JSON.
@@ -128,6 +136,7 @@ class JSONFormatter(OutputFormatter):
             has_circular: Whether circular dependencies were detected
             statistics: Optional graph statistics
             include_metadata: Whether to include component metadata
+            graph: Optional dependency graph (not used in JSON format)
 
         Returns:
             Formatted JSON string
@@ -177,11 +186,12 @@ class CSVFormatter(OutputFormatter):
         has_circular: bool,
         statistics: Optional[Dict] = None,
         include_metadata: bool = False,
+        graph: Optional["nx.DiGraph"] = None,
     ) -> str:
         """
         Format compilation order as CSV.
 
-        Columns: Order, Group ID, Package Name, Version/Tag, Source URL
+        Columns: Order, Group ID, Package Name, Version/Tag, Source URL, Dependencies
 
         Args:
             order: List of component identifiers in compilation order
@@ -189,6 +199,7 @@ class CSVFormatter(OutputFormatter):
             has_circular: Whether circular dependencies were detected
             statistics: Optional graph statistics (not used in CSV)
             include_metadata: Whether to include component metadata (not used in CSV)
+            graph: Optional dependency graph for counting dependencies
 
         Returns:
             Formatted CSV string
@@ -197,7 +208,9 @@ class CSVFormatter(OutputFormatter):
         writer = csv.writer(output)
 
         # Write header
-        writer.writerow(["Order", "Group ID", "Package Name", "Version/Tag", "Source URL"])
+        writer.writerow(
+            ["Order", "Group ID", "Package Name", "Version/Tag", "Source URL", "Dependencies"]
+        )
 
         # Write data rows
         for idx, comp_ref in enumerate(order, 1):
@@ -218,10 +231,28 @@ class CSVFormatter(OutputFormatter):
                 # Get source URL
                 source_url = comp.source_url if hasattr(comp, "source_url") else ""
 
-                writer.writerow([idx, group_id, package_name, version_tag, source_url])
+                # Count dependencies (incoming edges/predecessors)
+                # In the graph, if A depends on B, edge is B -> A
+                # So predecessors of A are the packages A depends on
+                dependency_count = 0
+                if graph is not None and comp_ref in graph:
+                    try:
+                        dependency_count = len(list(graph.predecessors(comp_ref)))
+                    except Exception:  # pylint: disable=broad-exception-caught
+                        dependency_count = 0
+
+                writer.writerow(
+                    [idx, group_id, package_name, version_tag, source_url, dependency_count]
+                )
             else:
                 # Component not found, use ref as group ID
-                writer.writerow([idx, comp_ref, "", "", ""])
+                dependency_count = 0
+                if graph is not None and comp_ref in graph:
+                    try:
+                        dependency_count = len(list(graph.predecessors(comp_ref)))
+                    except Exception:  # pylint: disable=broad-exception-caught
+                        dependency_count = 0
+                writer.writerow([idx, comp_ref, "", "", "", dependency_count])
 
         return output.getvalue()
 

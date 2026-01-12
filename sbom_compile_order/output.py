@@ -112,9 +112,26 @@ def extract_repo_url(url: str) -> str:
             return f"{parsed.scheme}://{parsed.netloc}/repos/asf/{repo}.git"
         return ""
 
+    # Handle Eclipse Git (git.eclipse.org)
+    if "git.eclipse.org" in parsed.netloc.lower():
+        # Pattern: http://git.eclipse.org/c/{project}/{repo}.git/tree or /tree/path
+        # Extract up to and including .git
+        match = re.match(r"^/c/([^/]+)/([^/]+\.git)", parsed.path)
+        if match:
+            project = match.group(1)
+            repo = match.group(2)
+            return f"{parsed.scheme}://{parsed.netloc}/c/{project}/{repo}"
+        return ""
+
     # Handle generic git URLs that already end in .git
-    if parsed.path.endswith(".git"):
-        return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+    # But check if there's a path after .git (like /tree) and remove it
+    if ".git" in parsed.path:
+        # Find the position of .git in the path
+        git_pos = parsed.path.find(".git")
+        if git_pos != -1:
+            # Extract everything up to and including .git
+            base_path = parsed.path[: git_pos + 4]
+            return f"{parsed.scheme}://{parsed.netloc}{base_path}"
 
     # Handle URLs that look like git repos but don't have .git suffix
     # Check if path has typical git repo structure (user/repo)

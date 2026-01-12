@@ -7,12 +7,128 @@ Provides different output formats: text, JSON, CSV, etc.
 import csv
 import io
 import json
+import re
 from typing import Dict, List, Optional, TYPE_CHECKING
+from urllib.parse import urlparse, parse_qs
 
 from sbom_compile_order.parser import Component
 
 if TYPE_CHECKING:
     import networkx as nx
+
+
+def extract_repo_url(url: str) -> str:
+    """
+    Extract the root repository URL from a source URL.
+
+    Converts various URL formats to a git clone-able repository URL.
+    Only returns URLs that are actually git repositories.
+
+    Args:
+        url: Source URL from component metadata
+
+    Returns:
+        Root repository URL suitable for git clone, or empty string if not a git repo
+    """
+    if not url:
+        return ""
+
+    url = url.strip()
+    if not url:
+        return ""
+
+    # Parse the URL
+    try:
+        parsed = urlparse(url)
+    except Exception:  # pylint: disable=broad-exception-caught
+        return ""
+
+    # Skip SVN URLs (not git clone-able)
+    if "svn" in parsed.netloc.lower() or "/svn/" in parsed.path.lower():
+        return ""
+
+    # Skip browse/view URLs that aren't git repos
+    if any(
+        path_part in parsed.path.lower()
+        for path_part in ["/browse/", "/viewvc/", "/view/", "/tags/", "/trunk/"]
+    ):
+        # Check if it's Apache SVN
+        if "apache.org" in parsed.netloc.lower():
+            return ""
+        # For other sites, try to extract repo if it looks like git
+        pass
+
+    # Handle GitHub URLs
+    if "github.com" in parsed.netloc.lower():
+        # Pattern: https://github.com/user/repo/tree/branch or /tree/master/ or .git
+        # Extract user/repo from path, handling various formats
+        match = re.match(r"^/([^/]+)/([^/]+)", parsed.path)
+        if match:
+            user = match.group(1)
+            repo = match.group(2)
+            # Remove .git suffix if present, we'll add it back
+            repo = repo.rstrip(".git")
+            # Use https for GitHub (more reliable than http)
+            scheme = "https" if parsed.scheme in ["http", "https"] else parsed.scheme
+            return f"{scheme}://{parsed.netloc}/{user}/{repo}.git"
+        return ""
+
+    # Handle GitLab URLs
+    if "gitlab.com" in parsed.netloc.lower() or "gitlab" in parsed.netloc.lower():
+        # Pattern: https://gitlab.com/user/repo/-/tree/branch
+        match = re.match(r"^/([^/]+)/([^/]+)", parsed.path)
+        if match:
+            user = match.group(1)
+            repo = match.group(2)
+            repo = repo.rstrip(".git")
+            return f"{parsed.scheme}://{parsed.netloc}/{user}/{repo}.git"
+        return ""
+
+    # Handle Bitbucket URLs
+    if "bitbucket.org" in parsed.netloc.lower():
+        # Pattern: https://bitbucket.org/user/repo/src
+        match = re.match(r"^/([^/]+)/([^/]+)", parsed.path)
+        if match:
+            user = match.group(1)
+            repo = match.group(2)
+            repo = repo.rstrip(".git")
+            scheme = "https" if parsed.scheme in ["http", "https"] else parsed.scheme
+            return f"{scheme}://{parsed.netloc}/{user}/{repo}.git"
+        return ""
+
+    # Handle Apache Git (git-wip-us.apache.org)
+    if "git-wip-us.apache.org" in parsed.netloc.lower() or "gitbox.apache.org" in parsed.netloc.lower():
+        # Pattern: https://git-wip-us.apache.org/repos/asf?p=repo.git
+        if "p=" in parsed.query:
+            query_params = parse_qs(parsed.query)
+            repo_param = query_params.get("p", [""])[0]
+            if repo_param:
+                repo = repo_param.rstrip(".git")
+                return f"{parsed.scheme}://{parsed.netloc}/repos/asf/{repo}.git"
+        # Pattern: https://git-wip-us.apache.org/repos/asf/repo.git
+        match = re.match(r"^/repos/asf/([^/]+)", parsed.path)
+        if match:
+            repo = match.group(1).rstrip(".git")
+            return f"{parsed.scheme}://{parsed.netloc}/repos/asf/{repo}.git"
+        return ""
+
+    # Handle generic git URLs that already end in .git
+    if parsed.path.endswith(".git"):
+        return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+
+    # Handle URLs that look like git repos but don't have .git suffix
+    # Check if path has typical git repo structure (user/repo)
+    match = re.match(r"^/([^/]+)/([^/]+)/?$", parsed.path)
+    if match:
+        # Only if it's a known git hosting service
+        git_hosts = ["github", "gitlab", "bitbucket", "git", "gitea", "gitee", "sourceforge"]
+        if any(host in parsed.netloc.lower() for host in git_hosts):
+            user = match.group(1)
+            repo = match.group(2)
+            return f"{parsed.scheme}://{parsed.netloc}/{user}/{repo}.git"
+
+    # If we can't determine it's a git repo, return empty
+    return ""
 
 
 class OutputFormatter:
@@ -191,7 +307,7 @@ class CSVFormatter(OutputFormatter):
         """
         Format compilation order as CSV.
 
-        Columns: Order, Group ID, Package Name, Version/Tag, Source URL, Dependencies
+        Columns: Order, Group ID, Package Name, Version/Tag, Provided URL, Repo URL, Dependencies
 
         Args:
             order: List of component identifiers in compilation order
@@ -209,7 +325,15 @@ class CSVFormatter(OutputFormatter):
 
         # Write header
         writer.writerow(
-            ["Order", "Group ID", "Package Name", "Version/Tag", "Source URL", "Dependencies"]
+            [
+                "Order",
+                "Group ID",
+                "Package Name",
+                "Version/Tag",
+                "Provided URL",
+                "Repo URL",
+                "Dependencies",
+            ]
         )
 
         # Write data rows
@@ -228,8 +352,11 @@ class CSVFormatter(OutputFormatter):
                 # Get version/tag
                 version_tag = comp.version if comp.version else ""
 
-                # Get source URL
-                source_url = comp.source_url if hasattr(comp, "source_url") else ""
+                # Get provided URL (original source URL)
+                provided_url = comp.source_url if hasattr(comp, "source_url") else ""
+
+                # Extract repo URL (root git clone-able URL)
+                repo_url = extract_repo_url(provided_url)
 
                 # Count dependencies (incoming edges/predecessors)
                 # In the graph, if A depends on B, edge is B -> A
@@ -242,7 +369,15 @@ class CSVFormatter(OutputFormatter):
                         dependency_count = 0
 
                 writer.writerow(
-                    [idx, group_id, package_name, version_tag, source_url, dependency_count]
+                    [
+                        idx,
+                        group_id,
+                        package_name,
+                        version_tag,
+                        provided_url,
+                        repo_url,
+                        dependency_count,
+                    ]
                 )
             else:
                 # Component not found, use ref as group ID
@@ -252,7 +387,7 @@ class CSVFormatter(OutputFormatter):
                         dependency_count = len(list(graph.predecessors(comp_ref)))
                     except Exception:  # pylint: disable=broad-exception-caught
                         dependency_count = 0
-                writer.writerow([idx, comp_ref, "", "", "", dependency_count])
+                writer.writerow([idx, comp_ref, "", "", "", "", dependency_count])
 
         return output.getvalue()
 

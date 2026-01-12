@@ -145,4 +145,9 @@ text.md
 __pycache__
 
 cache/
-
+tmp/
+*.swp
+*~
+~*
+.~*
+*#

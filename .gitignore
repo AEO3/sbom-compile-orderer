@@ -140,3 +140,9 @@ Thumbs.db
 
 # thinking file
 text.md 
+
+
+__pycache__
+
+cache/
+

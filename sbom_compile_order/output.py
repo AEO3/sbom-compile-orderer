@@ -159,6 +159,7 @@ class OutputFormatter:
         statistics: Optional[Dict] = None,
         include_metadata: bool = False,
         graph: Optional["nx.DiGraph"] = None,
+        pom_downloader: Optional[object] = None,
     ) -> str:
         """
         Format the compilation order.
@@ -170,6 +171,7 @@ class OutputFormatter:
             statistics: Optional graph statistics
             include_metadata: Whether to include component metadata
             graph: Optional dependency graph for counting dependencies
+            pom_downloader: Optional POM downloader instance
 
         Returns:
             Formatted string
@@ -188,6 +190,7 @@ class TextFormatter(OutputFormatter):
         statistics: Optional[Dict] = None,
         include_metadata: bool = False,
         graph: Optional["nx.DiGraph"] = None,
+        pom_downloader: Optional[object] = None,
     ) -> str:
         """
         Format compilation order as text.
@@ -199,6 +202,7 @@ class TextFormatter(OutputFormatter):
             statistics: Optional graph statistics
             include_metadata: Whether to include component metadata
             graph: Optional dependency graph (not used in text format)
+            pom_downloader: Optional POM downloader (not used in text format)
 
         Returns:
             Formatted text string
@@ -259,6 +263,7 @@ class JSONFormatter(OutputFormatter):
         statistics: Optional[Dict] = None,
         include_metadata: bool = False,
         graph: Optional["nx.DiGraph"] = None,
+        pom_downloader: Optional[object] = None,
     ) -> str:
         """
         Format compilation order as JSON.
@@ -270,6 +275,7 @@ class JSONFormatter(OutputFormatter):
             statistics: Optional graph statistics
             include_metadata: Whether to include component metadata
             graph: Optional dependency graph (not used in JSON format)
+            pom_downloader: Optional POM downloader (not used in JSON format)
 
         Returns:
             Formatted JSON string
@@ -320,11 +326,12 @@ class CSVFormatter(OutputFormatter):
         statistics: Optional[Dict] = None,
         include_metadata: bool = False,
         graph: Optional["nx.DiGraph"] = None,
+        pom_downloader: Optional[object] = None,
     ) -> str:
         """
         Format compilation order as CSV.
 
-        Columns: Order, Group ID, Package Name, Version/Tag, Provided URL, Repo URL, Dependencies
+        Columns: Order, Group ID, Package Name, Version/Tag, Provided URL, Repo URL, Dependencies, POM
 
         Args:
             order: List of component identifiers in compilation order
@@ -333,6 +340,7 @@ class CSVFormatter(OutputFormatter):
             statistics: Optional graph statistics (not used in CSV)
             include_metadata: Whether to include component metadata (not used in CSV)
             graph: Optional dependency graph for counting dependencies
+            pom_downloader: Optional POM downloader instance
 
         Returns:
             Formatted CSV string
@@ -350,63 +358,152 @@ class CSVFormatter(OutputFormatter):
                 "Provided URL",
                 "Repo URL",
                 "Dependencies",
+                "POM",
             ]
         )
 
         # Write data rows
         for idx, comp_ref in enumerate(order, 1):
-            comp = components.get(comp_ref)
-            if comp:
-                # Get Group ID (group:name format)
-                if comp.group:
-                    group_id = f"{comp.group}:{comp.name}"
-                else:
-                    group_id = comp.name
-
-                # Get package name (just the name part)
-                package_name = comp.name
-
-                # Get version/tag
-                version_tag = comp.version if comp.version else ""
-
-                # Get provided URL (original source URL)
-                provided_url = comp.source_url if hasattr(comp, "source_url") else ""
-
-                # Extract repo URL (root git clone-able URL)
-                repo_url = extract_repo_url(provided_url)
-
-                # Count dependencies (incoming edges/predecessors)
-                # In the graph, if A depends on B, edge is B -> A
-                # So predecessors of A are the packages A depends on
-                dependency_count = 0
-                if graph is not None and comp_ref in graph:
-                    try:
-                        dependency_count = len(list(graph.predecessors(comp_ref)))
-                    except Exception:  # pylint: disable=broad-exception-caught
-                        dependency_count = 0
-
-                writer.writerow(
-                    [
-                        idx,
-                        group_id,
-                        package_name,
-                        version_tag,
-                        provided_url,
-                        repo_url,
-                        dependency_count,
-                    ]
-                )
-            else:
-                # Component not found, use ref as group ID
-                dependency_count = 0
-                if graph is not None and comp_ref in graph:
-                    try:
-                        dependency_count = len(list(graph.predecessors(comp_ref)))
-                    except Exception:  # pylint: disable=broad-exception-caught
-                        dependency_count = 0
-                writer.writerow([idx, comp_ref, "", "", "", "", dependency_count])
+            row = self._format_row(
+                idx, comp_ref, components, graph, pom_downloader
+            )
+            writer.writerow(row)
 
         return output.getvalue()
+
+    def format_incremental(
+        self,
+        output_path: Path,
+        order: List[str],
+        components: Dict[str, Component],
+        has_circular: bool,
+        statistics: Optional[Dict] = None,
+        include_metadata: bool = False,
+        graph: Optional["nx.DiGraph"] = None,
+        pom_downloader: Optional[object] = None,
+    ) -> None:
+        """
+        Format compilation order as CSV, writing incrementally to file.
+
+        Columns: Order, Group ID, Package Name, Version/Tag, Provided URL, Repo URL, Dependencies, POM
+
+        Args:
+            output_path: Path to output CSV file
+            order: List of component identifiers in compilation order
+            components: Dictionary of all components
+            has_circular: Whether circular dependencies were detected
+            statistics: Optional graph statistics (not used in CSV)
+            include_metadata: Whether to include component metadata (not used in CSV)
+            graph: Optional dependency graph for counting dependencies
+            pom_downloader: Optional POM downloader instance
+        """
+        # Check if file exists to determine if we need to write header
+        file_exists = output_path.exists()
+        write_header = not file_exists
+
+        # Open file in append mode
+        with open(output_path, "a", encoding="utf-8", newline="") as file:
+            writer = csv.writer(file)
+
+            # Write header if new file
+            if write_header:
+                writer.writerow(
+                    [
+                        "Order",
+                        "Group ID",
+                        "Package Name",
+                        "Version/Tag",
+                        "Provided URL",
+                        "Repo URL",
+                        "Dependencies",
+                        "POM",
+                    ]
+                )
+
+            # Write data rows incrementally
+            for idx, comp_ref in enumerate(order, 1):
+                row = self._format_row(
+                    idx, comp_ref, components, graph, pom_downloader
+                )
+                writer.writerow(row)
+                file.flush()  # Ensure row is written immediately
+
+    def _format_row(
+        self,
+        idx: int,
+        comp_ref: str,
+        components: Dict[str, Component],
+        graph: Optional["nx.DiGraph"],
+        pom_downloader: Optional[object],
+    ) -> List:
+        """
+        Format a single CSV row.
+
+        Args:
+            idx: Row index/order number
+            comp_ref: Component reference identifier
+            components: Dictionary of all components
+            graph: Optional dependency graph
+            pom_downloader: Optional POM downloader instance
+
+        Returns:
+            List of values for the CSV row
+        """
+        comp = components.get(comp_ref)
+        if comp:
+            # Get Group ID (group:name format)
+            if comp.group:
+                group_id = f"{comp.group}:{comp.name}"
+            else:
+                group_id = comp.name
+
+            # Get package name (just the name part)
+            package_name = comp.name
+
+            # Get version/tag
+            version_tag = comp.version if comp.version else ""
+
+            # Get provided URL (original source URL)
+            provided_url = comp.source_url if hasattr(comp, "source_url") else ""
+
+            # Extract repo URL (root git clone-able URL)
+            repo_url = extract_repo_url(provided_url)
+
+            # Count dependencies (incoming edges/predecessors)
+            dependency_count = 0
+            if graph is not None and comp_ref in graph:
+                try:
+                    dependency_count = len(list(graph.predecessors(comp_ref)))
+                except Exception:  # pylint: disable=broad-exception-caught
+                    dependency_count = 0
+
+            # Download POM if downloader provided
+            pom_filename = ""
+            if pom_downloader and repo_url:
+                try:
+                    pom_filename = pom_downloader.download_pom(comp, repo_url) or ""
+                except Exception:  # pylint: disable=broad-exception-caught
+                    pom_filename = ""
+
+            return [
+                idx,
+                group_id,
+                package_name,
+                version_tag,
+                provided_url,
+                repo_url,
+                dependency_count,
+                pom_filename,
+            ]
+        else:
+            # Component not found, use ref as group ID
+            dependency_count = 0
+            if graph is not None and comp_ref in graph:
+                try:
+                    dependency_count = len(list(graph.predecessors(comp_ref)))
+                except Exception:  # pylint: disable=broad-exception-caught
+                    dependency_count = 0
+            return [idx, comp_ref, "", "", "", "", dependency_count, ""]
 
 
 def get_formatter(format_type: str) -> OutputFormatter:

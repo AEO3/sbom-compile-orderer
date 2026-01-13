@@ -13,7 +13,7 @@ from sbom_compile_order.dependency_resolver import DependencyResolver
 from sbom_compile_order.graph import DependencyGraph
 from sbom_compile_order.maven_central import MavenCentralClient
 from sbom_compile_order.output import get_formatter, write_dependencies_csv
-from sbom_compile_order.parser import SBOMParser
+from sbom_compile_order.parser import Component, SBOMParser
 from sbom_compile_order.pom_downloader import POMDownloader
 from sbom_compile_order.pom_dependency_extractor import POMDependencyExtractor
 
@@ -195,6 +195,21 @@ def main() -> None:
         _log_to_file(log_msg, log_file)
         if args.verbose:
             print(log_msg, file=sys.stderr)
+    
+    # Auto-enable --poms and -m when --leaves is used
+    if args.leaves:
+        if not args.poms:
+            args.poms = True
+            log_msg = "[DEBUG] Auto-enabled --poms (required for leaves extraction)"
+            _log_to_file(log_msg, log_file)
+            if args.verbose:
+                print(log_msg, file=sys.stderr)
+        if not args.maven_central_lookup:
+            args.maven_central_lookup = True
+            log_msg = "[DEBUG] Auto-enabled --maven-central-lookup (required for leaves extraction)"
+            _log_to_file(log_msg, log_file)
+            if args.verbose:
+                print(log_msg, file=sys.stderr)
     
     # Log program start
     log_msg = f"Starting sbom-compile-order v{__import__('sbom_compile_order').__version__}"

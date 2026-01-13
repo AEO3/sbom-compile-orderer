@@ -5,4 +5,4 @@ A tool for analysing CycloneDX SBOM files to determine compilation order
 for all dependencies including transitive dependencies.
 """
 
-__version__ = "1.1.1"
+__version__ = "1.2.0"

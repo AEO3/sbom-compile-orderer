@@ -9,7 +9,7 @@ import io
 import json
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs
 
 from sbom_compile_order.parser import Component
@@ -328,11 +328,14 @@ class CSVFormatter(OutputFormatter):
         include_metadata: bool = False,
         graph: Optional["nx.DiGraph"] = None,
         pom_downloader: Optional[object] = None,
+        maven_central_client: Optional[object] = None,
+        dependency_resolver: Optional[object] = None,
     ) -> str:
         """
         Format compilation order as CSV.
 
-        Columns: Order, Group ID, Package Name, Version/Tag, Provided URL, Repo URL, Dependencies, POM, AUTH
+        Columns: Order, Group ID, Package Name, Version/Tag, Provided URL, Repo URL,
+        Dependencies, POM, AUTH, Homepage URL, License Type
 
         Args:
             order: List of component identifiers in compilation order
@@ -342,6 +345,8 @@ class CSVFormatter(OutputFormatter):
             include_metadata: Whether to include component metadata (not used in CSV)
             graph: Optional dependency graph for counting dependencies
             pom_downloader: Optional POM downloader instance
+            maven_central_client: Optional Maven Central API client
+            dependency_resolver: Optional dependency resolver for fetching metadata
 
         Returns:
             Formatted CSV string
@@ -361,13 +366,22 @@ class CSVFormatter(OutputFormatter):
                 "Dependencies",
                 "POM",
                 "AUTH",
+                "Homepage URL",
+                "License Type",
+                "External Dependency Count",
             ]
         )
 
         # Write data rows
         for idx, comp_ref in enumerate(order, 1):
             row = self._format_row(
-                idx, comp_ref, components, graph, pom_downloader
+                idx,
+                comp_ref,
+                components,
+                graph,
+                pom_downloader,
+                maven_central_client,
+                dependency_resolver,
             )
             writer.writerow(row)
 
@@ -383,11 +397,17 @@ class CSVFormatter(OutputFormatter):
         include_metadata: bool = False,
         graph: Optional["nx.DiGraph"] = None,
         pom_downloader: Optional[object] = None,
+        maven_central_client: Optional[object] = None,
+        dependency_resolver: Optional[object] = None,
     ) -> None:
         """
         Format compilation order as CSV, writing incrementally to file.
 
-        Columns: Order, Group ID, Package Name, Version/Tag, Provided URL, Repo URL, Dependencies, POM, AUTH
+        Always overwrites existing file to ensure it contains exactly the same number
+        of rows as components in the SBOM.
+
+        Columns: Order, Group ID, Package Name, Version/Tag, Provided URL, Repo URL,
+        Dependencies, POM, AUTH, Homepage URL, License Type, External Dependency Count
 
         Args:
             output_path: Path to output CSV file
@@ -398,35 +418,41 @@ class CSVFormatter(OutputFormatter):
             include_metadata: Whether to include component metadata (not used in CSV)
             graph: Optional dependency graph for counting dependencies
             pom_downloader: Optional POM downloader instance
+            maven_central_client: Optional Maven Central API client
+            dependency_resolver: Optional dependency resolver for fetching metadata
         """
-        # Check if file exists to determine if we need to write header
-        file_exists = output_path.exists()
-        write_header = not file_exists
-
-        # Open file in append mode
-        with open(output_path, "a", encoding="utf-8", newline="") as file:
+        # Always overwrite existing file to ensure it matches the SBOM exactly
+        with open(output_path, "w", encoding="utf-8", newline="") as file:
             writer = csv.writer(file)
 
-            # Write header if new file
-            if write_header:
-                writer.writerow(
-                    [
-                        "Order",
-                        "Group ID",
-                        "Package Name",
-                        "Version/Tag",
-                        "Provided URL",
-                        "Repo URL",
-                        "Dependencies",
-                        "POM",
-                        "AUTH",
-                    ]
-                )
+            # Always write header
+            writer.writerow(
+                [
+                    "Order",
+                    "Group ID",
+                    "Package Name",
+                    "Version/Tag",
+                    "Provided URL",
+                    "Repo URL",
+                    "Dependencies",
+                    "POM",
+                    "AUTH",
+                    "Homepage URL",
+                    "License Type",
+                    "External Dependency Count",
+                ]
+            )
 
-            # Write data rows incrementally
+            # Write data rows incrementally - exactly one row per component in order
             for idx, comp_ref in enumerate(order, 1):
                 row = self._format_row(
-                    idx, comp_ref, components, graph, pom_downloader
+                    idx,
+                    comp_ref,
+                    components,
+                    graph,
+                    pom_downloader,
+                    maven_central_client,
+                    dependency_resolver,
                 )
                 writer.writerow(row)
                 file.flush()  # Ensure row is written immediately
@@ -438,6 +464,8 @@ class CSVFormatter(OutputFormatter):
         components: Dict[str, Component],
         graph: Optional["nx.DiGraph"],
         pom_downloader: Optional[object],
+        maven_central_client: Optional[object] = None,
+        dependency_resolver: Optional[object] = None,
     ) -> List:
         """
         Format a single CSV row.
@@ -448,6 +476,8 @@ class CSVFormatter(OutputFormatter):
             components: Dictionary of all components
             graph: Optional dependency graph
             pom_downloader: Optional POM downloader instance
+            maven_central_client: Optional Maven Central API client
+            dependency_resolver: Optional dependency resolver for fetching metadata
 
         Returns:
             List of values for the CSV row
@@ -492,6 +522,52 @@ class CSVFormatter(OutputFormatter):
                     pom_filename = ""
                     auth_required = ""
 
+            # Fetch homepage URL and license type
+            homepage_url = ""
+            license_type = ""
+            external_dependency_count = 0
+            
+            if comp.group and comp.name and comp.version:
+                # Try dependency resolver first (mvnrepository.com) as it has better data
+                if dependency_resolver:
+                    try:
+                        license, homepage = dependency_resolver.get_license_and_homepage(
+                            comp.group, comp.name, comp.version
+                        )
+                        if homepage:
+                            homepage_url = homepage
+                        if license:
+                            license_type = license
+                        
+                        # Get external dependencies (dependencies not in original SBOM)
+                        dependencies = dependency_resolver.get_dependencies(
+                            comp.group, comp.name, comp.version
+                        )
+                        if dependencies:
+                            # Count dependencies that are not in the original components
+                            component_keys = {
+                                f"{c.group}:{c.name}:{c.version or ''}"
+                                for c in components.values()
+                                if c.group and c.name
+                            }
+                            external_deps = [
+                                dep
+                                for dep in dependencies
+                                if f"{dep[0]}:{dep[1]}:{dep[2]}" not in component_keys
+                            ]
+                            external_dependency_count = len(external_deps)
+                    except Exception:  # pylint: disable=broad-exception-caught
+                        pass
+
+                # Fall back to Maven Central if dependency resolver didn't provide data
+                if not homepage_url and maven_central_client:
+                    try:
+                        homepage, _ = maven_central_client.get_package_info(comp)
+                        if homepage:
+                            homepage_url = homepage
+                    except Exception:  # pylint: disable=broad-exception-caught
+                        pass
+
             return [
                 idx,
                 group_id,
@@ -502,6 +578,9 @@ class CSVFormatter(OutputFormatter):
                 dependency_count,
                 pom_filename,
                 auth_required,
+                homepage_url,
+                license_type,
+                external_dependency_count,
             ]
         else:
             # Component not found, use ref as group ID
@@ -511,7 +590,82 @@ class CSVFormatter(OutputFormatter):
                     dependency_count = len(list(graph.predecessors(comp_ref)))
                 except Exception:  # pylint: disable=broad-exception-caught
                     dependency_count = 0
-            return [idx, comp_ref, "", "", "", "", dependency_count, "", ""]
+            return [
+                idx,
+                comp_ref,
+                "",
+                "",
+                "",
+                "",
+                dependency_count,
+                "",
+                "",
+                "",
+                "",
+                0,  # External Dependency Count
+            ]
+
+
+def write_dependencies_csv(
+    output_path: Path,
+    dependency_list: List[Tuple[str, str, str, int]],
+    dependency_resolver: Optional[object] = None,
+    verbose: bool = False,
+) -> None:
+    """
+    Write a CSV file containing dependency information.
+
+    Args:
+        output_path: Path to output CSV file
+        dependency_list: List of (group, artifact, version, depth) tuples
+        dependency_resolver: Optional dependency resolver for fetching metadata
+        verbose: Whether to print verbose output
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(output_path, "w", encoding="utf-8", newline="") as file:
+        writer = csv.writer(file)
+
+        # Write header
+        writer.writerow(
+            [
+                "Order",
+                "Group ID",
+                "Package Name",
+                "Version/Tag",
+                "Depth",
+                "Homepage URL",
+                "License Type",
+            ]
+        )
+
+        # Write data rows
+        for idx, (group, artifact, version, depth) in enumerate(dependency_list, 1):
+            homepage_url = ""
+            license_type = ""
+
+            # Fetch metadata if resolver provided
+            if dependency_resolver and version:
+                try:
+                    license, homepage = dependency_resolver.get_license_and_homepage(
+                        group, artifact, version
+                    )
+                    if homepage:
+                        homepage_url = homepage
+                    if license:
+                        license_type = license
+                except Exception:  # pylint: disable=broad-exception-caught
+                    if verbose:
+                        print(
+                            f"Warning: Failed to fetch metadata for "
+                            f"{group}:{artifact}:{version}",
+                            file=__import__("sys").stderr,
+                        )
+
+            group_id = f"{group}:{artifact}"
+            writer.writerow(
+                [idx, group_id, artifact, version, depth, homepage_url, license_type]
+            )
 
 
 def get_formatter(format_type: str) -> OutputFormatter:

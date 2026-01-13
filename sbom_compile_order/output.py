@@ -7,6 +7,7 @@ Provides different output formats: text, JSON, CSV, etc.
 import csv
 import io
 import json
+import os
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
@@ -449,6 +450,7 @@ class CSVFormatter(OutputFormatter):
             )
 
             # Write data rows incrementally - exactly one row per component in order
+            # This file is written once and never modified again
             for idx, comp_ref in enumerate(order, 1):
                 row = self._format_row(
                     idx,
@@ -461,6 +463,7 @@ class CSVFormatter(OutputFormatter):
                 )
                 writer.writerow(row)
                 file.flush()  # Ensure row is written immediately
+                os.fsync(file.fileno())  # Force write to disk
 
     def _format_row(
         self,

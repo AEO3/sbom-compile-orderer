@@ -4,6 +4,7 @@ Command-line interface for SBOM Compile Order tool.
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -27,11 +28,16 @@ def _log_to_file(message: str, log_file: Path) -> None:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_message = f"[{timestamp}] {message}"
     try:
+        # Ensure parent directory exists
         log_file.parent.mkdir(parents=True, exist_ok=True)
+        # Open in append mode and ensure immediate flush
         with open(log_file, "a", encoding="utf-8") as log:
             log.write(log_message + "\n")
-    except Exception:  # pylint: disable=broad-exception-caught
-        pass  # Silently fail if log file can't be written
+            log.flush()  # Ensure immediate write to disk
+            os.fsync(log.fileno())  # Force write to disk
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        # Log to stderr if file logging fails
+        print(f"Warning: Failed to write to log file {log_file}: {exc}", file=sys.stderr)
 
 
 def main() -> None:
@@ -165,7 +171,20 @@ def main() -> None:
 
     # Set up cache directory in current working directory
     cache_dir = Path.cwd() / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
     log_file = cache_dir / "sbom-compile-order.log"
+    
+    # Log program start
+    log_msg = f"Starting sbom-compile-order v{__import__('sbom_compile_order').__version__}"
+    _log_to_file(log_msg, log_file)
+    log_msg = f"Command: {' '.join(sys.argv)}"
+    _log_to_file(log_msg, log_file)
+    log_msg = f"Working directory: {Path.cwd()}"
+    _log_to_file(log_msg, log_file)
+    log_msg = f"Cache directory: {cache_dir}"
+    _log_to_file(log_msg, log_file)
+    if args.verbose:
+        print(f"Log file: {log_file}", file=sys.stderr)
 
     try:
         # Parse SBOM
@@ -177,9 +196,17 @@ def main() -> None:
 
         sbom_parser = SBOMParser(sbom_path)
         sbom_parser.parse()
+        log_msg = f"SBOM parsed successfully: {sbom_path}"
+        _log_to_file(log_msg, log_file)
+        if args.verbose:
+            print(log_msg, file=sys.stderr)
 
         components = sbom_parser.get_all_components()
         dependencies = sbom_parser.get_dependencies()
+        log_msg = f"Extracted {len(components)} components and {len(dependencies)} dependency entries from SBOM"
+        _log_to_file(log_msg, log_file)
+        if args.verbose:
+            print(log_msg, file=sys.stderr)
 
         # Filter out ignored group IDs
         if args.ignore_group_ids:
@@ -219,6 +246,10 @@ def main() -> None:
 
         graph = DependencyGraph()
         graph.build_from_parser(components, dependencies)
+        log_msg = f"Dependency graph built: {graph.graph.number_of_nodes()} nodes, {graph.graph.number_of_edges()} edges"
+        _log_to_file(log_msg, log_file)
+        if args.verbose:
+            print(log_msg, file=sys.stderr)
 
         # Get compilation order
         log_msg = "Determining compilation order..."
@@ -328,6 +359,11 @@ def main() -> None:
                 print(log_msg, file=sys.stderr)
 
         # Format output
+        log_msg = f"Formatting output as: {args.format}"
+        _log_to_file(log_msg, log_file)
+        if args.verbose:
+            print(log_msg, file=sys.stderr)
+        
         formatter = get_formatter(args.format)
 
         # Determine output path - default to cache/compile-order.csv for CSV format
@@ -344,6 +380,19 @@ def main() -> None:
             if args.verbose:
                 print(log_msg, file=sys.stderr)
             
+            log_msg = f"Processing {len(order)} components for CSV output"
+            _log_to_file(log_msg, log_file)
+            if args.verbose:
+                print(log_msg, file=sys.stderr)
+            
+            # Create compile-order.csv WITHOUT Maven Central lookups
+            # This file is written once and never modified again
+            # Pass None for maven_central_client and dependency_resolver to skip lookups
+            log_msg = "Creating compile-order.csv (base file, no Maven Central lookups)"
+            _log_to_file(log_msg, log_file)
+            if args.verbose:
+                print(log_msg, file=sys.stderr)
+            
             formatter.format_incremental(
                 output_path,
                 order,
@@ -353,15 +402,16 @@ def main() -> None:
                 args.include_metadata,
                 graph.graph,
                 pom_downloader,
-                maven_central_client,
-                dependency_resolver,
+                None,  # No Maven Central lookups for compile-order.csv
+                None,  # No dependency resolver for compile-order.csv
             )
-            log_msg = f"Output written to: {output_path}"
+            log_msg = f"compile-order.csv written successfully: {output_path} ({len(order)} rows) - file is now static"
             _log_to_file(log_msg, log_file)
             if args.verbose:
                 print(log_msg, file=sys.stderr)
 
             # Create enhanced CSV if Maven Central lookup is requested
+            # This reads from compile-order.csv and writes incrementally to enhanced.csv
             if args.maven_central_lookup and maven_central_client:
                 from sbom_compile_order.enhanced_csv import create_enhanced_csv
 
@@ -381,6 +431,7 @@ def main() -> None:
                     enhanced_csv_path,
                     maven_central_client,
                     verbose=args.verbose,
+                    log_file=log_file,
                 )
 
                 log_msg = f"Enhanced CSV created: {enhanced_csv_path}"
@@ -394,35 +445,41 @@ def main() -> None:
                 _log_to_file(log_msg, log_file)
                 if args.verbose:
                     print(log_msg, file=sys.stderr)
+                downloaded_count = 0
+                failed_count = 0
                 for comp_ref in order:
                     comp = components.get(comp_ref)
                     if comp:
                         try:
                             jar_filename, auth_req = package_downloader.download_package(comp)
                             if jar_filename:
+                                downloaded_count += 1
+                                log_msg = f"Downloaded package: {jar_filename} for {comp.group}:{comp.name}:{comp.version}"
+                                _log_to_file(log_msg, log_file)
                                 if args.verbose:
-                                    print(
-                                        f"Downloaded package: {jar_filename}",
-                                        file=sys.stderr,
-                                    )
+                                    print(log_msg, file=sys.stderr)
                             elif auth_req:
+                                log_msg = f"Authentication required for {comp.group}:{comp.name}:{comp.version}"
+                                _log_to_file(log_msg, log_file)
                                 if args.verbose:
-                                    print(
-                                        f"Authentication required for {comp.name}",
-                                        file=sys.stderr,
-                                    )
+                                    print(log_msg, file=sys.stderr)
                         except Exception as exc:  # pylint: disable=broad-exception-caught
+                            failed_count += 1
+                            log_msg = f"Failed to download package for {comp.group}:{comp.name}:{comp.version}: {exc}"
+                            _log_to_file(log_msg, log_file)
                             if args.verbose:
-                                print(
-                                    f"Failed to download package for {comp.name}: {exc}",
-                                    file=sys.stderr,
-                                )
-                log_msg = "Package download completed"
+                                print(log_msg, file=sys.stderr)
+                log_msg = f"Package download completed: {downloaded_count} downloaded, {failed_count} failed"
                 _log_to_file(log_msg, log_file)
                 if args.verbose:
                     print(log_msg, file=sys.stderr)
         else:
             # Standard formatting (all at once) for non-CSV formats
+            log_msg = f"Formatting {len(order)} components as {args.format}"
+            _log_to_file(log_msg, log_file)
+            if args.verbose:
+                print(log_msg, file=sys.stderr)
+            
             output = formatter.format(
                 order,
                 components,
@@ -439,13 +496,19 @@ def main() -> None:
             if args.output:
                 output_path = Path(args.output)
                 output_path.parent.mkdir(parents=True, exist_ok=True)
+                log_msg = f"Writing {args.format} output to: {output_path}"
+                _log_to_file(log_msg, log_file)
+                if args.verbose:
+                    print(log_msg, file=sys.stderr)
                 with open(output_path, "w", encoding="utf-8") as file:
                     file.write(output)
-                log_msg = f"Output written to: {output_path}"
+                log_msg = f"Output written successfully: {output_path}"
                 _log_to_file(log_msg, log_file)
                 if args.verbose:
                     print(log_msg, file=sys.stderr)
             else:
+                log_msg = "Writing output to stdout"
+                _log_to_file(log_msg, log_file)
                 print(output)
 
         # Resolve dependencies and create extended CSV if requested
@@ -494,6 +557,12 @@ def main() -> None:
                 _log_to_file(log_msg, log_file)
                 if args.verbose:
                     print(log_msg, file=sys.stderr)
+        
+        # Log completion
+        log_msg = "Processing completed successfully"
+        _log_to_file(log_msg, log_file)
+        if args.verbose:
+            print(log_msg, file=sys.stderr)
 
     except FileNotFoundError as exc:
         error_msg = f"Error: {exc}"

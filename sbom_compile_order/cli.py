@@ -14,8 +14,7 @@ from sbom_compile_order.graph import DependencyGraph
 from sbom_compile_order.maven_central import MavenCentralClient
 from sbom_compile_order.output import get_formatter, write_dependencies_csv
 from sbom_compile_order.parser import SBOMParser
-# STUBBED OUT: POM downloader import disabled
-# from sbom_compile_order.pom_downloader import POMDownloader
+from sbom_compile_order.pom_downloader import POMDownloader
 
 
 def _log_to_file(message: str, log_file: Path) -> None:
@@ -271,20 +270,20 @@ def main() -> None:
             if args.verbose:
                 print(log_msg, file=sys.stderr)
 
-        # STUBBED OUT: POM downloader functionality disabled
+        # Initialize POM downloader if requested
         pom_downloader = None
-        # if args.clone_repos or args.poms:
-        #     pom_downloader = POMDownloader(
-        #         cache_dir,
-        #         verbose=args.verbose,
-        #         clone_repos=args.clone_repos,
-        #         download_from_maven_central=args.poms,
-        #     )
-        #     mode = "clone repositories" if args.clone_repos else "Maven Central"
-        #     log_msg = f"POM cache directory: {cache_dir} (mode: {mode})"
-        #     _log_to_file(log_msg, log_file)
-        #     if args.verbose:
-        #         print(log_msg, file=sys.stderr)
+        if args.clone_repos or args.poms:
+            pom_downloader = POMDownloader(
+                cache_dir,
+                verbose=args.verbose,
+                clone_repos=args.clone_repos,
+                download_from_maven_central=args.poms,
+            )
+            mode = "clone repositories" if args.clone_repos else "Maven Central"
+            log_msg = f"POM cache directory: {cache_dir} (mode: {mode})"
+            _log_to_file(log_msg, log_file)
+            if args.verbose:
+                print(log_msg, file=sys.stderr)
 
         # STUBBED OUT: Package downloader functionality disabled
         package_downloader = None

@@ -365,10 +365,12 @@ class POMDownloader:
         """
         Download POM file from Maven Central Repository.
 
-        Uses the official remotecontent endpoint as documented at:
-        https://central.sonatype.org/search/rest-api-guide/
+        Uses direct Maven Central URL structure:
+        https://repo1.maven.org/maven2/{groupPath}/{artifactId}/{version}/{artifactId}-{version}.pom
 
-        Format: https://search.maven.org/remotecontent?filepath=groupId/artifactId/version/artifactId-version.pom
+        Example:
+        groupId=org.jboss.jdeparser, artifactId=jdeparser, version=2.0.3.Final
+        URL: https://repo1.maven.org/maven2/org/jboss/jdeparser/jdeparser/2.0.3.Final/jdeparser-2.0.3.Final.pom
 
         Args:
             component: Component to download POM for
@@ -381,48 +383,58 @@ class POMDownloader:
 
         try:
             # Convert groupId to path format (replace dots with slashes)
-            # e.g., com.google.inject -> com/google/inject
+            # e.g., org.jboss.jdeparser -> org/jboss/jdeparser
             group_path = component.group.replace(".", "/")
             artifact_id = component.name
             version = component.version
 
-            # Construct filepath: groupId/artifactId/version/artifactId-version.pom
-            filepath = f"{group_path}/{artifact_id}/{version}/{artifact_id}-{version}.pom"
+            # Build direct Maven Central URL
+            # Format: https://repo1.maven.org/maven2/{groupPath}/{artifactId}/{version}/{artifactId}-{version}.pom
+            base_url = "https://repo1.maven.org/maven2"
+            pom_url = f"{base_url}/{group_path}/{artifact_id}/{version}/{artifact_id}-{version}.pom"
 
-            # Build URL according to official API documentation
-            pom_url = f"https://search.maven.org/remotecontent?filepath={filepath}"
-
-            if self.verbose:
-                self._log(f"Downloading POM from Maven Central: {pom_url}")
+            self._log(f"Downloading POM from Maven Central: {pom_url}")
 
             req = Request(pom_url)
             req.add_header("User-Agent", "sbom-compile-order/1.3.1")
             with urlopen(req, timeout=10) as response:
                 if response.status == 200:
                     pom_content = response.read()
+                    pom_size = len(pom_content)
                     # Verify it's valid XML
                     pom_text = pom_content.decode("utf-8", errors="ignore")
                     if "<?xml" in pom_text and "<artifactId>" in pom_text:
-                        if self.verbose:
-                            self._log(
-                                f"Successfully downloaded POM from Maven Central for "
-                                f"{component.group}:{component.name}:{component.version}"
-                            )
+                        self._log(
+                            f"Successfully downloaded POM from Maven Central: "
+                            f"{component.group}:{component.name}:{component.version} "
+                            f"({pom_size} bytes)"
+                        )
                         return pom_content, False
+                    else:
+                        self._log(
+                            f"Downloaded content from Maven Central is not valid XML POM: "
+                            f"{component.group}:{component.name}:{component.version} "
+                            f"(URL: {pom_url})"
+                        )
         except HTTPError as exc:
             if exc.code in [401, 403]:
+                self._log(
+                    f"Maven Central POM download requires authentication (HTTP {exc.code}): "
+                    f"{component.group}:{component.name}:{component.version} "
+                    f"(URL: {pom_url})"
+                )
                 return None, True  # Auth required
-            if self.verbose:
-                self._log(
-                    f"Maven Central POM download failed (HTTP {exc.code}): "
-                    f"{component.group}:{component.name}:{component.version}"
-                )
+            self._log(
+                f"Maven Central POM download failed (HTTP {exc.code}): "
+                f"{component.group}:{component.name}:{component.version} "
+                f"(URL: {pom_url})"
+            )
         except (URLError, Exception) as exc:  # pylint: disable=broad-exception-caught
-            if self.verbose:
-                self._log(
-                    f"Maven Central POM download failed: {exc} "
-                    f"for {component.group}:{component.name}:{component.version}"
-                )
+            self._log(
+                f"Maven Central POM download failed: {exc} "
+                f"for {component.group}:{component.name}:{component.version} "
+                f"(URL: {pom_url})"
+            )
         return None, False
 
     def _download_pom_direct(self, pom_url: str) -> Tuple[Optional[bytes], bool]:
@@ -478,7 +490,10 @@ class POMDownloader:
 
         # Check if already cached
         if cached_pom.exists():
-            self._log(f"Using cached POM for {component.name}")
+            self._log(
+                f"Using cached POM for {component.group}:{component.name}:{component.version} "
+                f"(cache file: {cached_pom.name})"
+            )
             return cached_pom.name, False
 
         # Extract group_id from component
@@ -487,8 +502,16 @@ class POMDownloader:
         # First, try downloading from Maven Central if requested
         # According to official API: https://central.sonatype.org/search/rest-api-guide/
         if self.download_from_maven_central and component.group and component.name and component.version:
+            self._log(
+                f"Attempting to download POM from Maven Central for "
+                f"{component.group}:{component.name}:{component.version}"
+            )
             pom_content, auth_required = self._download_pom_from_maven_central(component)
             if auth_required:
+                self._log(
+                    f"Authentication required for Maven Central POM download: "
+                    f"{component.group}:{component.name}:{component.version}"
+                )
                 return None, True
             if pom_content:
                 try:
@@ -497,10 +520,28 @@ class POMDownloader:
                     if self._pom_content_matches(pom_text, component.name, group_id):
                         with open(cached_pom, "wb") as f:
                             f.write(pom_content)
-                        self._log(f"Cached POM from Maven Central: {cached_pom.name}")
+                        pom_size = len(pom_content)
+                        self._log(
+                            f"Successfully downloaded and cached POM from Maven Central: "
+                            f"{component.group}:{component.name}:{component.version} "
+                            f"({pom_size} bytes, cache file: {cached_pom.name})"
+                        )
                         return cached_pom.name, False
+                    else:
+                        self._log(
+                            f"Downloaded POM from Maven Central does not match component: "
+                            f"{component.group}:{component.name}:{component.version}"
+                        )
                 except Exception as exc:  # pylint: disable=broad-exception-caught
-                    self._log(f"Error processing Maven Central POM: {exc}")
+                    self._log(
+                        f"Error processing Maven Central POM for "
+                        f"{component.group}:{component.name}:{component.version}: {exc}"
+                    )
+            else:
+                self._log(
+                    f"Failed to download POM from Maven Central for "
+                    f"{component.group}:{component.name}:{component.version}"
+                )
 
         # Fall back to git repository download if Maven Central not requested or failed
         if not repo_url:

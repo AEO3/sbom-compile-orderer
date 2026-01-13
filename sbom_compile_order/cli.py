@@ -174,6 +174,14 @@ def main() -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
     log_file = cache_dir / "sbom-compile-order.log"
     
+    # Auto-enable maven-central-lookup when --poms is used
+    if args.poms and not args.maven_central_lookup:
+        args.maven_central_lookup = True
+        log_msg = "[DEBUG] Auto-enabled --maven-central-lookup (required for POM downloads)"
+        _log_to_file(log_msg, log_file)
+        if args.verbose:
+            print(log_msg, file=sys.stderr)
+    
     # Log program start
     log_msg = f"Starting sbom-compile-order v{__import__('sbom_compile_order').__version__}"
     _log_to_file(log_msg, log_file)
@@ -383,10 +391,29 @@ def main() -> None:
             if args.verbose:
                 print(log_msg, file=sys.stderr)
             
-            # Create compile-order.csv WITHOUT Maven Central lookups
+            # Log POM download start if POM downloader is active
+            if pom_downloader:
+                if pom_downloader.download_from_maven_central:
+                    log_msg = (
+                        f"POM download enabled: Will download POM files from Maven Central "
+                        f"for {len(order)} components"
+                    )
+                    _log_to_file(log_msg, log_file)
+                    if args.verbose:
+                        print(log_msg, file=sys.stderr)
+                elif pom_downloader.clone_repos:
+                    log_msg = (
+                        f"POM download enabled: Will clone repositories to find POM files "
+                        f"for {len(order)} components"
+                    )
+                    _log_to_file(log_msg, log_file)
+                    if args.verbose:
+                        print(log_msg, file=sys.stderr)
+            
+            # Create compile-order.csv WITHOUT Maven Central lookups or POM downloads
             # This file is written once and never modified again
-            # Pass None for maven_central_client and dependency_resolver to skip lookups
-            log_msg = "Creating compile-order.csv (base file, no Maven Central lookups)"
+            # Pass None for pom_downloader, maven_central_client and dependency_resolver to skip lookups
+            log_msg = "Creating compile-order.csv (base file, no Maven Central lookups, no POM downloads)"
             _log_to_file(log_msg, log_file)
             if args.verbose:
                 print(log_msg, file=sys.stderr)
@@ -399,7 +426,7 @@ def main() -> None:
                 statistics,
                 args.include_metadata,
                 graph.graph,
-                pom_downloader,
+                None,  # No POM downloads for compile-order.csv - all enhanced data goes to enhanced.csv
                 None,  # No Maven Central lookups for compile-order.csv
                 None,  # No dependency resolver for compile-order.csv
             )
@@ -410,6 +437,7 @@ def main() -> None:
 
             # Create enhanced CSV if Maven Central lookup is requested
             # This reads from compile-order.csv and writes incrementally to enhanced.csv
+            # All enhanced data (Maven Central lookups, POM downloads) goes here, NOT in compile-order.csv
             if args.maven_central_lookup and maven_central_client:
                 from sbom_compile_order.enhanced_csv import create_enhanced_csv
 
@@ -423,11 +451,13 @@ def main() -> None:
                 _log_to_file(log_msg, log_file)
                 if args.verbose:
                     print(log_msg, file=sys.stderr)
-
+                
+                # Pass pom_downloader to enhanced CSV so POM downloads happen there, not in compile-order.csv
                 create_enhanced_csv(
                     compile_order_path,
                     enhanced_csv_path,
                     maven_central_client,
+                    pom_downloader=pom_downloader,  # POM downloads happen in enhanced.csv
                     verbose=args.verbose,
                     log_file=log_file,
                 )
@@ -436,6 +466,28 @@ def main() -> None:
                 _log_to_file(log_msg, log_file)
                 if args.verbose:
                     print(log_msg, file=sys.stderr)
+                
+                # Log POM download summary after enhanced CSV creation (where POM downloads actually happen)
+                if pom_downloader:
+                    pom_cache_dir = cache_dir / "poms"
+                    if pom_cache_dir.exists():
+                        pom_files = list(pom_cache_dir.glob("*.pom"))
+                        pom_count = len(pom_files)
+                        log_msg = (
+                            f"POM download summary: {pom_count} POM file(s) cached in "
+                            f"{pom_cache_dir} (out of {len(order)} components processed)"
+                        )
+                        _log_to_file(log_msg, log_file)
+                        if args.verbose:
+                            print(log_msg, file=sys.stderr)
+                    else:
+                        log_msg = (
+                            f"POM download summary: No POM files were downloaded "
+                            f"(out of {len(order)} components processed)"
+                        )
+                        _log_to_file(log_msg, log_file)
+                        if args.verbose:
+                            print(log_msg, file=sys.stderr)
 
             # STUBBED OUT: Package download functionality disabled
             # if package_downloader:

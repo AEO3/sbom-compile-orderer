@@ -514,7 +514,8 @@ class CSVFormatter(OutputFormatter):
             provided_url = comp.source_url if hasattr(comp, "source_url") else ""
 
             # Extract repo URL (root git clone-able URL)
-            repo_url = extract_repo_url(provided_url)
+            # Leave empty for compile-order.csv - will be filled in enhanced.csv from POM file
+            repo_url = ""
 
             # Count dependencies (incoming edges/predecessors)
             dependency_count = 0

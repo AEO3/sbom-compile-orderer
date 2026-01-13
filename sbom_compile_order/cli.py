@@ -15,6 +15,7 @@ from sbom_compile_order.maven_central import MavenCentralClient
 from sbom_compile_order.output import get_formatter, write_dependencies_csv
 from sbom_compile_order.parser import SBOMParser
 from sbom_compile_order.pom_downloader import POMDownloader
+from sbom_compile_order.pom_dependency_extractor import POMDependencyExtractor
 
 
 def _log_to_file(message: str, log_file: Path) -> None:
@@ -147,6 +148,19 @@ def main() -> None:
         type=int,
         default=2,
         help="Maximum depth to traverse dependencies (default: 2)",
+    )
+
+    parser.add_argument(
+        "--leaves",
+        action="store_true",
+        help="Extract dependencies from POM files and create leaves.csv with dependencies not in compile-order.csv",
+    )
+
+    parser.add_argument(
+        "--leaves-output",
+        type=str,
+        default=None,
+        help="Filename for leaves CSV in cache directory (default: leaves.csv)",
     )
 
     args = parser.parse_args()
@@ -607,7 +621,204 @@ def main() -> None:
                 _log_to_file(log_msg, log_file)
                 if args.verbose:
                     print(log_msg, file=sys.stderr)
-        
+
+        # Process leaves extraction if requested
+        if args.leaves:
+            # Determine compile-order.csv path
+            if args.format == "csv":
+                if args.output:
+                    compile_order_path = Path(args.output)
+                else:
+                    compile_order_path = cache_dir / "compile-order.csv"
+            else:
+                # If not CSV format, use default compile-order.csv in cache
+                compile_order_path = cache_dir / "compile-order.csv"
+
+            # Determine leaves.csv path
+            leaves_csv_path = None
+            if args.leaves_output:
+                user_path = Path(args.leaves_output)
+                if user_path.is_absolute() or len(user_path.parts) > 1:
+                    filename = user_path.name
+                    leaves_csv_path = cache_dir / filename
+                else:
+                    leaves_csv_path = cache_dir / user_path
+            else:
+                leaves_csv_path = cache_dir / "leaves.csv"
+
+            log_msg = f"Extracting dependencies from POM files and creating leaves.csv: {leaves_csv_path}"
+            _log_to_file(log_msg, log_file)
+            if args.verbose:
+                print(log_msg, file=sys.stderr)
+
+            # Ensure compile-order.csv exists
+            if not compile_order_path.exists():
+                log_msg = (
+                    f"Warning: compile-order.csv not found at {compile_order_path}. "
+                    f"Leaves extraction skipped. "
+                    f"Ensure CSV format is used to generate compile-order.csv first."
+                )
+                _log_to_file(log_msg, log_file)
+                if args.verbose:
+                    print(log_msg, file=sys.stderr)
+            else:
+                # Initialize POM dependency extractor
+                extractor = POMDependencyExtractor(cache_dir, verbose=args.verbose)
+
+                # Step 1: Check if POMs have been downloaded, if not download them first
+                pom_cache_dir = cache_dir / "poms"
+                pom_files_exist = pom_cache_dir.exists() and len(list(pom_cache_dir.glob("*.pom"))) > 0
+
+                if not pom_files_exist:
+                    log_msg = "No POM files found in cache. Downloading POMs for compile-order.csv entries..."
+                    _log_to_file(log_msg, log_file)
+                    if args.verbose:
+                        print(log_msg, file=sys.stderr)
+
+                    # Initialize POM downloader for compile-order.csv entries
+                    compile_order_pom_downloader = POMDownloader(
+                        cache_dir,
+                        verbose=args.verbose,
+                        clone_repos=False,
+                        download_from_maven_central=True,
+                    )
+
+                    # Download POMs for all entries in compile-order.csv
+                    downloaded_count = extractor.download_poms_for_compile_order(
+                        compile_order_path, compile_order_pom_downloader
+                    )
+                    log_msg = f"Downloaded {downloaded_count} POM files from compile-order.csv"
+                    _log_to_file(log_msg, log_file)
+                    if args.verbose:
+                        print(log_msg, file=sys.stderr)
+                else:
+                    pom_count = len(list(pom_cache_dir.glob("*.pom")))
+                    log_msg = f"Found {pom_count} existing POM files in cache. Skipping initial download."
+                    _log_to_file(log_msg, log_file)
+                    if args.verbose:
+                        print(log_msg, file=sys.stderr)
+
+                # Initialize POM downloader for downloading POMs of new dependencies
+                leaves_pom_downloader = POMDownloader(
+                    cache_dir,
+                    verbose=args.verbose,
+                    clone_repos=False,
+                    download_from_maven_central=True,
+                )
+
+                # Load dependencies from compile-order.csv (needed for comparison)
+                log_msg = f"Loading dependencies from compile-order.csv: {compile_order_path}"
+                _log_to_file(log_msg, log_file)
+                if args.verbose:
+                    print(log_msg, file=sys.stderr)
+
+                compile_order_deps = extractor.load_compile_order_dependencies(compile_order_path)
+
+                # Iterative process: extract dependencies, find new ones, download POMs, repeat
+                iteration = 0
+                max_iterations = 20  # Prevent infinite loops
+                all_new_dependencies: List[POMDependency] = []
+                processed_dep_ids: Set[str] = set()
+
+                while iteration < max_iterations:
+                    iteration += 1
+                    log_msg = f"=== Iteration {iteration}: Extracting dependencies from POM files ==="
+                    _log_to_file(log_msg, log_file)
+                    if args.verbose:
+                        print(log_msg, file=sys.stderr)
+
+                    # Step 2: Extract all dependencies from POM files (including newly downloaded ones)
+                    pom_dependencies = extractor.extract_all_dependencies(recursive=False)
+
+                    # Find new dependencies not in compile-order.csv
+                    log_msg = "Comparing POM dependencies with compile-order.csv..."
+                    _log_to_file(log_msg, log_file)
+                    if args.verbose:
+                        print(log_msg, file=sys.stderr)
+
+                    new_dependencies = extractor.find_new_dependencies(pom_dependencies, compile_order_deps)
+
+                    # Filter out already processed dependencies
+                    new_dependencies = [
+                        dep
+                        for dep in new_dependencies
+                        if dep.get_identifier() not in processed_dep_ids
+                    ]
+
+                    if not new_dependencies:
+                        log_msg = "No new dependencies found. Process complete."
+                        _log_to_file(log_msg, log_file)
+                        if args.verbose:
+                            print(log_msg, file=sys.stderr)
+                        break
+
+                    log_msg = f"Found {len(new_dependencies)} new dependencies in iteration {iteration}"
+                    _log_to_file(log_msg, log_file)
+                    if args.verbose:
+                        print(log_msg, file=sys.stderr)
+
+                    # Download POMs for new dependencies
+                    log_msg = f"Downloading POMs for {len(new_dependencies)} new dependencies..."
+                    _log_to_file(log_msg, log_file)
+                    if args.verbose:
+                        print(log_msg, file=sys.stderr)
+
+                    downloaded_in_iteration = 0
+                    for dep in new_dependencies:
+                        dep_id = dep.get_identifier()
+                        if dep_id in processed_dep_ids:
+                            continue
+
+                        if dep.version and "${" not in dep.version:
+                            component = Component(
+                                {
+                                    "bom-ref": f"pkg:maven/{dep.group_id}/{dep.artifact_id}@{dep.version}?type=jar",
+                                    "group": dep.group_id,
+                                    "name": dep.artifact_id,
+                                    "version": dep.version,
+                                    "purl": f"pkg:maven/{dep.group_id}/{dep.artifact_id}@{dep.version}?type=jar",
+                                    "type": "library",
+                                    "scope": dep.scope,
+                                }
+                            )
+
+                            pom_filename, _ = leaves_pom_downloader.download_pom(component)
+                            if pom_filename:
+                                downloaded_in_iteration += 1
+                                log_msg = f"  Downloaded POM for {dep_id}: {pom_filename}"
+                                _log_to_file(log_msg, log_file)
+                                if args.verbose:
+                                    print(log_msg, file=sys.stderr)
+
+                        processed_dep_ids.add(dep_id)
+                        all_new_dependencies.append(dep)
+
+                    log_msg = f"Downloaded {downloaded_in_iteration} POM files in iteration {iteration}"
+                    _log_to_file(log_msg, log_file)
+                    if args.verbose:
+                        print(log_msg, file=sys.stderr)
+
+                    # Continue to next iteration to process newly downloaded POMs
+
+                # Create leaves.csv with all found dependencies
+                log_msg = f"Creating leaves.csv with {len(all_new_dependencies)} total new dependencies..."
+                _log_to_file(log_msg, log_file)
+                if args.verbose:
+                    print(log_msg, file=sys.stderr)
+
+                extractor.create_leaves_csv(
+                    all_new_dependencies,
+                    leaves_csv_path,
+                    pom_downloader=None,  # POMs already downloaded
+                    recursive=False,  # Already processed recursively
+                    compile_order_deps=compile_order_deps,
+                )
+
+                log_msg = f"Leaves CSV created successfully: {leaves_csv_path} ({len(new_dependencies)} entries)"
+                _log_to_file(log_msg, log_file)
+                if args.verbose:
+                    print(log_msg, file=sys.stderr)
+
         # Log completion
         log_msg = "Processing completed successfully"
         _log_to_file(log_msg, log_file)

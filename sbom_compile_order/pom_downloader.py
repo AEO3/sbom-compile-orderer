@@ -8,6 +8,7 @@ Handles mono-repos by finding package-specific POM files.
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 from datetime import datetime
@@ -393,48 +394,131 @@ class POMDownloader:
             base_url = "https://repo1.maven.org/maven2"
             pom_url = f"{base_url}/{group_path}/{artifact_id}/{version}/{artifact_id}-{version}.pom"
 
-            self._log(f"Downloading POM from Maven Central: {pom_url}")
+            # Log detailed download information
+            self._log(
+                f"[POM DOWNLOAD] Starting download for {component.group}:{component.name}:{component.version}"
+            )
+            self._log(f"[POM DOWNLOAD] Group path: {group_path}")
+            self._log(f"[POM DOWNLOAD] Artifact ID: {artifact_id}")
+            self._log(f"[POM DOWNLOAD] Version: {version}")
+            self._log(f"[POM DOWNLOAD] Full URL: {pom_url}")
+            self._log(f"[POM DOWNLOAD] Executing: urlopen(Request('{pom_url}'), timeout=30)")
 
             req = Request(pom_url)
             req.add_header("User-Agent", "sbom-compile-order/1.3.1")
-            with urlopen(req, timeout=10) as response:
-                if response.status == 200:
-                    pom_content = response.read()
-                    pom_size = len(pom_content)
-                    # Verify it's valid XML
-                    pom_text = pom_content.decode("utf-8", errors="ignore")
-                    if "<?xml" in pom_text and "<artifactId>" in pom_text:
-                        self._log(
-                            f"Successfully downloaded POM from Maven Central: "
-                            f"{component.group}:{component.name}:{component.version} "
-                            f"({pom_size} bytes)"
-                        )
-                        return pom_content, False
+            req.add_header("Accept", "application/xml, text/xml, */*")
+            
+            # Log request details
+            self._log(f"[POM DOWNLOAD] Request headers: User-Agent=sbom-compile-order/1.3.1, Accept=application/xml, text/xml, */*")
+            
+            # Create SSL context that accepts default certificates
+            ssl_context = ssl.create_default_context()
+            
+            try:
+                self._log(f"[POM DOWNLOAD] Opening connection to {pom_url}...")
+                with urlopen(req, timeout=30, context=ssl_context) as response:
+                    self._log(f"[POM DOWNLOAD] Connection opened, response code: {response.getcode()}")
+                    # Get status code - urlopen raises HTTPError for non-2xx status codes
+                    # So if we get here, it's likely 200, but check getcode() to be sure
+                    status_code = response.getcode()
+                    self._log(f"[POM DOWNLOAD] Response status code: {status_code}")
+                    
+                    if status_code == 200:
+                        self._log(f"[POM DOWNLOAD] Reading response content...")
+                        pom_content = response.read()
+                        pom_size = len(pom_content)
+                        self._log(f"[POM DOWNLOAD] Read {pom_size} bytes")
+                        
+                        if pom_size == 0:
+                            self._log(
+                                f"[POM DOWNLOAD] ERROR: Downloaded empty file from Maven Central: "
+                                f"{component.group}:{component.name}:{component.version} "
+                                f"(URL: {pom_url})"
+                            )
+                            return None, False
+                        
+                        # Verify it's valid XML
+                        pom_text = pom_content.decode("utf-8", errors="ignore")
+                        self._log(f"[POM DOWNLOAD] Decoded content, checking for XML markers...")
+                        self._log(f"[POM DOWNLOAD] First 100 chars: {pom_text[:100]}")
+                        
+                        if "<?xml" in pom_text and "<artifactId>" in pom_text:
+                            self._log(
+                                f"[POM DOWNLOAD] SUCCESS: Successfully downloaded POM from Maven Central: "
+                                f"{component.group}:{component.name}:{component.version} "
+                                f"({pom_size} bytes)"
+                            )
+                            return pom_content, False
+                        else:
+                            has_xml = "<?xml" in pom_text
+                            has_artifact = "<artifactId>" in pom_text
+                            self._log(
+                                f"[POM DOWNLOAD] ERROR: Downloaded content is not valid XML POM: "
+                                f"{component.group}:{component.name}:{component.version} "
+                                f"(URL: {pom_url}, size: {pom_size} bytes, has <?xml: {has_xml}, has <artifactId>: {has_artifact}, first 200 chars: {pom_text[:200]})"
+                            )
+                            return None, False
                     else:
                         self._log(
-                            f"Downloaded content from Maven Central is not valid XML POM: "
+                            f"[POM DOWNLOAD] ERROR: Maven Central POM download returned non-200 status (HTTP {status_code}): "
                             f"{component.group}:{component.name}:{component.version} "
                             f"(URL: {pom_url})"
                         )
-        except HTTPError as exc:
-            if exc.code in [401, 403]:
+                        return None, False
+            except HTTPError as exc:
+                status_code = exc.code
+                error_body = ""
+                try:
+                    # Try to read error response body for more details
+                    error_body = exc.read().decode("utf-8", errors="ignore")[:200]
+                except Exception:  # pylint: disable=broad-exception-caught
+                    pass
+                
                 self._log(
-                    f"Maven Central POM download requires authentication (HTTP {exc.code}): "
-                    f"{component.group}:{component.name}:{component.version} "
-                    f"(URL: {pom_url})"
+                    f"[POM DOWNLOAD] ERROR: HTTPError raised - status: {status_code}, "
+                    f"reason: {exc.reason}, URL: {pom_url}"
                 )
-                return None, True  # Auth required
+                
+                if status_code in [401, 403]:
+                    self._log(
+                        f"[POM DOWNLOAD] ERROR: Maven Central POM download requires authentication (HTTP {status_code}): "
+                        f"{component.group}:{component.name}:{component.version} "
+                        f"(URL: {pom_url})"
+                    )
+                    return None, True  # Auth required
+                elif status_code == 404:
+                    self._log(
+                        f"[POM DOWNLOAD] ERROR: Maven Central POM not found (HTTP 404): "
+                        f"{component.group}:{component.name}:{component.version} "
+                        f"(URL: {pom_url})"
+                    )
+                else:
+                    error_details = f"reason: {exc.reason}"
+                    if error_body:
+                        error_details += f", response: {error_body}"
+                    self._log(
+                        f"[POM DOWNLOAD] ERROR: Maven Central POM download failed (HTTP {status_code}): "
+                        f"{component.group}:{component.name}:{component.version} "
+                        f"(URL: {pom_url}, {error_details})"
+                    )
+                return None, False
+        except URLError as exc:
+            error_reason = exc.reason if hasattr(exc, 'reason') else str(exc)
             self._log(
-                f"Maven Central POM download failed (HTTP {exc.code}): "
-                f"{component.group}:{component.name}:{component.version} "
-                f"(URL: {pom_url})"
+                f"[POM DOWNLOAD] ERROR: URLError - {error_reason} "
+                f"for {component.group}:{component.name}:{component.version} "
+                f"(URL: {pom_url}, exception type: {type(exc).__name__})"
             )
-        except (URLError, Exception) as exc:  # pylint: disable=broad-exception-caught
+            return None, False
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            import traceback
+            tb_str = traceback.format_exc()
             self._log(
-                f"Maven Central POM download failed: {exc} "
+                f"[POM DOWNLOAD] ERROR: Unexpected exception {type(exc).__name__}: {exc} "
                 f"for {component.group}:{component.name}:{component.version} "
                 f"(URL: {pom_url})"
             )
+            self._log(f"[POM DOWNLOAD] ERROR: Traceback: {tb_str}")
         return None, False
 
     def _download_pom_direct(self, pom_url: str) -> Tuple[Optional[bytes], bool]:
@@ -475,6 +559,10 @@ class POMDownloader:
         Returns:
             Tuple of (filename of cached POM file or None if not found, auth_required bool)
         """
+        # Log start of package download
+        component_id = f"{component.group}:{component.name}:{component.version}" if component.group and component.name and component.version else component.get_identifier()
+        self._log(f"[start] Package: {component_id}")
+        
         # Create a cache key based on component identifier
         # Clean up the identifier by removing query parameters and URL fragments
         identifier = component.get_identifier()
@@ -494,6 +582,7 @@ class POMDownloader:
                 f"Using cached POM for {component.group}:{component.name}:{component.version} "
                 f"(cache file: {cached_pom.name})"
             )
+            self._log(f"[end] Package: {component_id} - using cached file")
             return cached_pom.name, False
 
         # Extract group_id from component
@@ -512,31 +601,69 @@ class POMDownloader:
                     f"Authentication required for Maven Central POM download: "
                     f"{component.group}:{component.name}:{component.version}"
                 )
+                self._log(f"[end] Package: {component_id} - authentication required")
                 return None, True
             if pom_content:
                 try:
+                    self._log(
+                        f"[POM SAVE] POM content received ({len(pom_content)} bytes), "
+                        f"verifying and saving to: {cached_pom}"
+                    )
                     # Verify it matches the component
                     pom_text = pom_content.decode("utf-8", errors="ignore")
-                    if self._pom_content_matches(pom_text, component.name, group_id):
+                    self._log(f"[POM SAVE] Decoded POM text, length: {len(pom_text)} chars")
+                    
+                    matches = self._pom_content_matches(pom_text, component.name, group_id)
+                    self._log(
+                        f"[POM SAVE] POM content match check: {matches} "
+                        f"(component.name={component.name}, group_id={group_id})"
+                    )
+                    
+                    if matches:
+                        self._log(f"[POM SAVE] Writing POM file to: {cached_pom}")
+                        # Ensure parent directory exists
+                        cached_pom.parent.mkdir(parents=True, exist_ok=True)
                         with open(cached_pom, "wb") as f:
-                            f.write(pom_content)
+                            bytes_written = f.write(pom_content)
+                            f.flush()
+                            os.fsync(f.fileno())
+                        self._log(f"[POM SAVE] Wrote {bytes_written} bytes to {cached_pom}")
+                        
+                        # Verify file was written
+                        if cached_pom.exists():
+                            file_size = cached_pom.stat().st_size
+                            self._log(
+                                f"[POM SAVE] SUCCESS: File verified on disk: {cached_pom} ({file_size} bytes)"
+                            )
+                        else:
+                            self._log(
+                                f"[POM SAVE] ERROR: File was not written to disk: {cached_pom}"
+                            )
+                        
                         pom_size = len(pom_content)
                         self._log(
                             f"Successfully downloaded and cached POM from Maven Central: "
                             f"{component.group}:{component.name}:{component.version} "
                             f"({pom_size} bytes, cache file: {cached_pom.name})"
                         )
+                        self._log(f"[end] Package: {component_id} - successfully downloaded and cached")
                         return cached_pom.name, False
                     else:
                         self._log(
-                            f"Downloaded POM from Maven Central does not match component: "
+                            f"[POM SAVE] ERROR: Downloaded POM from Maven Central does not match component: "
                             f"{component.group}:{component.name}:{component.version}"
                         )
+                        self._log(
+                            f"[POM SAVE] POM text preview (first 500 chars): {pom_text[:500]}"
+                        )
                 except Exception as exc:  # pylint: disable=broad-exception-caught
+                    import traceback
+                    tb_str = traceback.format_exc()
                     self._log(
-                        f"Error processing Maven Central POM for "
+                        f"[POM SAVE] ERROR: Exception processing Maven Central POM for "
                         f"{component.group}:{component.name}:{component.version}: {exc}"
                     )
+                    self._log(f"[POM SAVE] ERROR: Traceback: {tb_str}")
             else:
                 self._log(
                     f"Failed to download POM from Maven Central for "
@@ -545,14 +672,17 @@ class POMDownloader:
 
         # Fall back to git repository download if Maven Central not requested or failed
         if not repo_url:
+            self._log(f"[end] Package: {component_id} - no repo URL provided")
             return None, False
 
         if self.clone_repos:
             # Clone repository approach
             repo_path, auth_required = self._clone_or_update_repo(repo_url)
             if auth_required:
+                self._log(f"[end] Package: {component_id} - authentication required for repository clone")
                 return None, True
             if not repo_path:
+                self._log(f"[end] Package: {component_id} - repository clone failed")
                 return None, False
 
             # Find POM file
@@ -563,9 +693,11 @@ class POMDownloader:
                 try:
                     shutil.copy2(pom_path, cached_pom)
                     self._log(f"Cached POM: {cached_pom.name}")
+                    self._log(f"[end] Package: {component_id} - successfully cached from repository")
                     return cached_pom.name, False
                 except Exception as exc:  # pylint: disable=broad-exception-caught
                     self._log(f"Error caching POM: {exc}")
+                    self._log(f"[end] Package: {component_id} - error caching from repository")
                     return None, False
         else:
             # Direct download approach
@@ -587,6 +719,7 @@ class POMDownloader:
                                 with open(cached_pom, "wb") as f:
                                     f.write(pom_content)
                                 self._log(f"Cached POM: {cached_pom.name}")
+                                self._log(f"[end] Package: {component_id} - successfully cached from direct download")
                                 return cached_pom.name, False
                     except Exception as exc:  # pylint: disable=broad-exception-caught
                         self._log(f"Error processing downloaded POM: {exc}")
@@ -594,8 +727,11 @@ class POMDownloader:
 
             # If we detected auth requirements, return auth_required=True
             if auth_detected:
+                self._log(f"[end] Package: {component_id} - authentication required for direct download")
                 return None, True
 
+        # Final return - no POM found
+        self._log(f"[end] Package: {component_id} - not found")
         return None, False
 
     def _pom_content_matches(

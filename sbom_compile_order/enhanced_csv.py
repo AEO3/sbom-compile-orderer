@@ -14,6 +14,31 @@ from sbom_compile_order.parser import Component
 from sbom_compile_order.output import extract_repo_url
 
 
+def _build_maven_central_urls(group: str, artifact: str, version: str) -> tuple[str, str]:
+    """
+    Build Maven Central URLs for POM and JAR files.
+
+    Args:
+        group: Maven group ID
+        artifact: Maven artifact ID
+        version: Version
+
+    Returns:
+        Tuple of (pom_url, jar_url)
+    """
+    if not group or not artifact or not version:
+        return "", ""
+    
+    # Convert groupId to path format (replace dots with slashes)
+    group_path = group.replace(".", "/")
+    base_url = "https://repo1.maven.org/maven2"
+    
+    pom_url = f"{base_url}/{group_path}/{artifact}/{version}/{artifact}-{version}.pom"
+    jar_url = f"{base_url}/{group_path}/{artifact}/{version}/{artifact}-{version}.jar"
+    
+    return pom_url, jar_url
+
+
 def _extract_scm_url_from_pom(pom_content: str) -> str:
     """
     Extract SCM URL from POM file content.
@@ -135,8 +160,8 @@ def create_enhanced_csv(
     enhanced_file = open(enhanced_csv_path, "w", encoding="utf-8", newline="")
     writer = csv.writer(enhanced_file)
     
-    # Write header - add new columns "Downloaded" and "File Location" to the end
-    enhanced_header = list(header) + ["Downloaded", "File Location"]
+    # Write header - add new columns "Downloaded", "File Location", "POM URL", and "JAR URL" to the end
+    enhanced_header = list(header) + ["Downloaded", "File Location", "POM URL", "JAR URL"]
     writer.writerow(enhanced_header)
     enhanced_file.flush()
     os.fsync(enhanced_file.fileno())
@@ -207,6 +232,12 @@ def create_enhanced_csv(
                 if verbose:
                     print(log_msg, file=sys.stderr)
 
+        # Build Maven Central URLs for POM and JAR
+        pom_url_maven = ""
+        jar_url_maven = ""
+        if comp.group and comp.name and comp.version:
+            pom_url_maven, jar_url_maven = _build_maven_central_urls(comp.group, comp.name, comp.version)
+        
         # Download POM file if pom_downloader is provided
         pom_filename = ""
         auth_required = ""
@@ -331,9 +362,11 @@ def create_enhanced_csv(
         if license_type:
             row[14] = license_type
         
-        # Add new columns: Downloaded (16) and File Location (17)
+        # Add new columns: Downloaded (16), File Location (17), POM URL (18), and JAR URL (19)
         row.append(downloaded_status)
         row.append(file_location)
+        row.append(pom_url_maven)
+        row.append(jar_url_maven)
 
         # Write row immediately and flush to disk for tailing
         writer.writerow(row)

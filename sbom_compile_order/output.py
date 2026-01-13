@@ -524,19 +524,18 @@ class CSVFormatter(OutputFormatter):
                 except Exception:  # pylint: disable=broad-exception-caught
                     dependency_count = 0
 
-            # Download POM if downloader provided
-            # Try Maven Central first (doesn't require repo_url), then fall back to repo_url if provided
+            # STUBBED OUT: POM download functionality disabled
             pom_filename = ""
             auth_required = ""
-            if pom_downloader:
-                try:
-                    # Try downloading from Maven Central first (works without repo_url)
-                    pom_result, auth_req = pom_downloader.download_pom(comp, repo_url or "")
-                    pom_filename = pom_result or ""
-                    auth_required = "AUTH" if auth_req else ""
-                except Exception:  # pylint: disable=broad-exception-caught
-                    pom_filename = ""
-                    auth_required = ""
+            # if pom_downloader:
+            #     try:
+            #         # Try downloading from Maven Central first (works without repo_url)
+            #         pom_result, auth_req = pom_downloader.download_pom(comp, repo_url or "")
+            #         pom_filename = pom_result or ""
+            #         auth_required = "AUTH" if auth_req else ""
+            #     except Exception:  # pylint: disable=broad-exception-caught
+            #         pom_filename = ""
+            #         auth_required = ""
 
             # Fetch homepage URL and license type
             homepage_url = ""

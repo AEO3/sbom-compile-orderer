@@ -396,7 +396,7 @@ class POMDownloader:
                 self._log(f"Downloading POM from Maven Central: {pom_url}")
 
             req = Request(pom_url)
-            req.add_header("User-Agent", "sbom-compile-order/1.3.0")
+            req.add_header("User-Agent", "sbom-compile-order/1.3.1")
             with urlopen(req, timeout=10) as response:
                 if response.status == 200:
                     pom_content = response.read()
@@ -437,7 +437,7 @@ class POMDownloader:
         """
         try:
             req = Request(pom_url)
-            req.add_header("User-Agent", "sbom-compile-order/1.3.0")
+            req.add_header("User-Agent", "sbom-compile-order/1.3.1")
             with urlopen(req, timeout=10) as response:
                 if response.status == 200:
                     return response.read(), False

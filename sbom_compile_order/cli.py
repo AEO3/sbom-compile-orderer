@@ -14,7 +14,8 @@ from sbom_compile_order.graph import DependencyGraph
 from sbom_compile_order.maven_central import MavenCentralClient
 from sbom_compile_order.output import get_formatter, write_dependencies_csv
 from sbom_compile_order.parser import SBOMParser
-from sbom_compile_order.pom_downloader import POMDownloader
+# STUBBED OUT: POM downloader import disabled
+# from sbom_compile_order.pom_downloader import POMDownloader
 
 
 def _log_to_file(message: str, log_file: Path) -> None:
@@ -270,35 +271,33 @@ def main() -> None:
             if args.verbose:
                 print(log_msg, file=sys.stderr)
 
-        # Initialize POM downloader only if explicitly requested
+        # STUBBED OUT: POM downloader functionality disabled
         pom_downloader = None
-        # POM downloading is optional - enable if clone-repos or poms flag is set
-        # Basic CSV output works without POM downloading
-        if args.clone_repos or args.poms:
-            pom_downloader = POMDownloader(
-                cache_dir,
-                verbose=args.verbose,
-                clone_repos=args.clone_repos,
-                download_from_maven_central=args.poms,
-            )
-            mode = "clone repositories" if args.clone_repos else "Maven Central"
-            log_msg = f"POM cache directory: {cache_dir} (mode: {mode})"
-            _log_to_file(log_msg, log_file)
-            if args.verbose:
-                print(log_msg, file=sys.stderr)
+        # if args.clone_repos or args.poms:
+        #     pom_downloader = POMDownloader(
+        #         cache_dir,
+        #         verbose=args.verbose,
+        #         clone_repos=args.clone_repos,
+        #         download_from_maven_central=args.poms,
+        #     )
+        #     mode = "clone repositories" if args.clone_repos else "Maven Central"
+        #     log_msg = f"POM cache directory: {cache_dir} (mode: {mode})"
+        #     _log_to_file(log_msg, log_file)
+        #     if args.verbose:
+        #         print(log_msg, file=sys.stderr)
 
-        # Initialize package downloader if requested
+        # STUBBED OUT: Package downloader functionality disabled
         package_downloader = None
-        if args.pull_package:
-            from sbom_compile_order.package_downloader import PackageDownloader
-
-            package_downloader = PackageDownloader(
-                cache_dir, verbose=args.verbose
-            )
-            log_msg = f"Package downloader initialized: {cache_dir}"
-            _log_to_file(log_msg, log_file)
-            if args.verbose:
-                print(log_msg, file=sys.stderr)
+        # if args.pull_package:
+        #     from sbom_compile_order.package_downloader import PackageDownloader
+        #
+        #     package_downloader = PackageDownloader(
+        #         cache_dir, verbose=args.verbose
+        #     )
+        #     log_msg = f"Package downloader initialized: {cache_dir}"
+        #     _log_to_file(log_msg, log_file)
+        #     if args.verbose:
+        #         print(log_msg, file=sys.stderr)
 
         # Initialize Maven Central client if requested
         maven_central_client = None
@@ -439,40 +438,40 @@ def main() -> None:
                 if args.verbose:
                     print(log_msg, file=sys.stderr)
 
-            # Download packages if requested
-            if package_downloader:
-                log_msg = "Downloading packages from Maven Central..."
-                _log_to_file(log_msg, log_file)
-                if args.verbose:
-                    print(log_msg, file=sys.stderr)
-                downloaded_count = 0
-                failed_count = 0
-                for comp_ref in order:
-                    comp = components.get(comp_ref)
-                    if comp:
-                        try:
-                            jar_filename, auth_req = package_downloader.download_package(comp)
-                            if jar_filename:
-                                downloaded_count += 1
-                                log_msg = f"Downloaded package: {jar_filename} for {comp.group}:{comp.name}:{comp.version}"
-                                _log_to_file(log_msg, log_file)
-                                if args.verbose:
-                                    print(log_msg, file=sys.stderr)
-                            elif auth_req:
-                                log_msg = f"Authentication required for {comp.group}:{comp.name}:{comp.version}"
-                                _log_to_file(log_msg, log_file)
-                                if args.verbose:
-                                    print(log_msg, file=sys.stderr)
-                        except Exception as exc:  # pylint: disable=broad-exception-caught
-                            failed_count += 1
-                            log_msg = f"Failed to download package for {comp.group}:{comp.name}:{comp.version}: {exc}"
-                            _log_to_file(log_msg, log_file)
-                            if args.verbose:
-                                print(log_msg, file=sys.stderr)
-                log_msg = f"Package download completed: {downloaded_count} downloaded, {failed_count} failed"
-                _log_to_file(log_msg, log_file)
-                if args.verbose:
-                    print(log_msg, file=sys.stderr)
+            # STUBBED OUT: Package download functionality disabled
+            # if package_downloader:
+            #     log_msg = "Downloading packages from Maven Central..."
+            #     _log_to_file(log_msg, log_file)
+            #     if args.verbose:
+            #         print(log_msg, file=sys.stderr)
+            #     downloaded_count = 0
+            #     failed_count = 0
+            #     for comp_ref in order:
+            #         comp = components.get(comp_ref)
+            #         if comp:
+            #             try:
+            #                 jar_filename, auth_req = package_downloader.download_package(comp)
+            #                 if jar_filename:
+            #                     downloaded_count += 1
+            #                     log_msg = f"Downloaded package: {jar_filename} for {comp.group}:{comp.name}:{comp.version}"
+            #                     _log_to_file(log_msg, log_file)
+            #                     if args.verbose:
+            #                         print(log_msg, file=sys.stderr)
+            #                 elif auth_req:
+            #                     log_msg = f"Authentication required for {comp.group}:{comp.name}:{comp.version}"
+            #                     _log_to_file(log_msg, log_file)
+            #                     if args.verbose:
+            #                         print(log_msg, file=sys.stderr)
+            #             except Exception as exc:  # pylint: disable=broad-exception-caught
+            #                 failed_count += 1
+            #                 log_msg = f"Failed to download package for {comp.group}:{comp.name}:{comp.version}: {exc}"
+            #                 _log_to_file(log_msg, log_file)
+            #                 if args.verbose:
+            #                     print(log_msg, file=sys.stderr)
+            #     log_msg = f"Package download completed: {downloaded_count} downloaded, {failed_count} failed"
+            #     _log_to_file(log_msg, log_file)
+            #     if args.verbose:
+            #         print(log_msg, file=sys.stderr)
         else:
             # Standard formatting (all at once) for non-CSV formats
             log_msg = f"Formatting {len(order)} components as {args.format}"

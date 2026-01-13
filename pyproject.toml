@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sbom-compile-order"
-version = "1.3.0"
+version = "1.3.1"
 description = "Analyse CycloneDX SBOM files to determine compilation order for all dependencies"
 readme = "README.md"
 requires-python = ">=3.12"

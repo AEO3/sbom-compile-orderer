@@ -191,6 +191,7 @@ class DependencyResolver:
                         "Homepage URL",
                         "License Type",
                         "Status",
+                        "Original Package",
                     ]
                 )
                 self._extended_csv_file.flush()
@@ -238,6 +239,7 @@ class DependencyResolver:
         homepage_url: str = "",
         license_type: str = "",
         status: str = "found",
+        is_original: int = 0,
     ) -> None:
         """
         Write a row to the extended CSV file incrementally.
@@ -250,6 +252,7 @@ class DependencyResolver:
             homepage_url: Homepage URL (if available)
             license_type: License type (if available)
             status: Status message (e.g., "found", "processing", "metadata_fetched")
+            is_original: 1 if package is from original compile-order.csv, 0 otherwise
         """
         if not self._extended_csv_writer:
             return
@@ -266,6 +269,7 @@ class DependencyResolver:
                 homepage_url,
                 license_type,
                 status,
+                is_original,
             ]
             self._extended_csv_writer.writerow(row)
             self._extended_csv_file.flush()  # Ensure immediate write for tailing
@@ -273,7 +277,7 @@ class DependencyResolver:
             if self.verbose:
                 print(
                     f"[DEBUG] Extended CSV: Added {group_id}:{version} at depth {depth} "
-                    f"(order {self._extended_csv_order}, status: {status})",
+                    f"(order {self._extended_csv_order}, status: {status}, original: {is_original})",
                     file=sys.stderr,
                 )
         except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -363,7 +367,7 @@ class DependencyResolver:
 
         try:
             request = Request(url)
-            request.add_header("User-Agent", "sbom-compile-order/1.2.0")
+            request.add_header("User-Agent", "sbom-compile-order/1.3.0")
 
             with urlopen(request, timeout=15) as response:
                 html_content = response.read().decode("utf-8")
@@ -414,7 +418,7 @@ class DependencyResolver:
 
         try:
             request = Request(url)
-            request.add_header("User-Agent", "sbom-compile-order/1.2.0")
+            request.add_header("User-Agent", "sbom-compile-order/1.3.0")
 
             with urlopen(request, timeout=15) as response:
                 html_content = response.read().decode("utf-8")
@@ -584,6 +588,7 @@ class DependencyResolver:
                         )
 
                 # Write to extended CSV with status "found" (even if metadata is empty)
+                # Note: This is for resolve_all_dependencies, dependencies are not original
                 self._write_extended_csv_row(
                     dep_group,
                     dep_artifact,
@@ -592,6 +597,7 @@ class DependencyResolver:
                     homepage_url,
                     license_type,
                     "found",
+                    is_original=0,  # Dependency, not from original SBOM
                 )
 
             if self.verbose:
@@ -689,6 +695,8 @@ class DependencyResolver:
                                     )
 
                         # Write row even if metadata is empty (works offline)
+                        # Note: This is for resolve_all_dependencies, not resolve_from_compile_order_csv
+                        # In resolve_from_compile_order_csv, original packages get is_original=1
                         self._write_extended_csv_row(
                             comp.group,
                             comp.name,
@@ -697,6 +705,7 @@ class DependencyResolver:
                             homepage_url,
                             license_type,
                             "original",
+                            is_original=1,  # Original component from SBOM
                         )
 
         if self.verbose:
@@ -875,7 +884,7 @@ class DependencyResolver:
                             file=sys.stderr,
                         )
 
-            # Write original package row (depth 0)
+            # Write original package row (depth 0) - mark as original (1)
             self._write_extended_csv_row(
                 group,
                 artifact,
@@ -884,6 +893,7 @@ class DependencyResolver:
                 homepage_url,
                 license_type,
                 "from_compile_order",
+                is_original=1,  # This package is from compile-order.csv
             )
 
             # Fetch and add dependencies for this package

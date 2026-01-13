@@ -23,19 +23,27 @@ from sbom_compile_order.parser import Component
 class POMDownloader:
     """Downloads and caches POM files from git repositories."""
 
-    def __init__(self, cache_dir: Path, verbose: bool = False, clone_repos: bool = False) -> None:
+    def __init__(
+        self,
+        cache_dir: Path,
+        verbose: bool = False,
+        clone_repos: bool = False,
+        download_from_maven_central: bool = False,
+    ) -> None:
         """
         Initialize the POM downloader.
 
         Args:
             cache_dir: Directory to cache downloaded POM files
             verbose: Enable verbose output
-            clone_repos: If True, clone repositories. If False, download POMs directly via HTTP
+            clone_repos: If True, clone repositories to find POM files
+            download_from_maven_central: If True, download POMs from Maven Central
         """
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.verbose = verbose
         self.clone_repos = clone_repos
+        self.download_from_maven_central = download_from_maven_central
         self.repo_cache_dir = self.cache_dir / "repos"
         if self.clone_repos:
             self.repo_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -351,9 +359,75 @@ class POMDownloader:
 
         return urls
 
+    def _download_pom_from_maven_central(
+        self, component: Component
+    ) -> Tuple[Optional[bytes], bool]:
+        """
+        Download POM file from Maven Central Repository.
+
+        Uses the official remotecontent endpoint as documented at:
+        https://central.sonatype.org/search/rest-api-guide/
+
+        Format: https://search.maven.org/remotecontent?filepath=groupId/artifactId/version/artifactId-version.pom
+
+        Args:
+            component: Component to download POM for
+
+        Returns:
+            Tuple of (POM file content as bytes or None if failed, auth_required bool)
+        """
+        if not component.group or not component.name or not component.version:
+            return None, False
+
+        try:
+            # Convert groupId to path format (replace dots with slashes)
+            # e.g., com.google.inject -> com/google/inject
+            group_path = component.group.replace(".", "/")
+            artifact_id = component.name
+            version = component.version
+
+            # Construct filepath: groupId/artifactId/version/artifactId-version.pom
+            filepath = f"{group_path}/{artifact_id}/{version}/{artifact_id}-{version}.pom"
+
+            # Build URL according to official API documentation
+            pom_url = f"https://search.maven.org/remotecontent?filepath={filepath}"
+
+            if self.verbose:
+                self._log(f"Downloading POM from Maven Central: {pom_url}")
+
+            req = Request(pom_url)
+            req.add_header("User-Agent", "sbom-compile-order/1.3.0")
+            with urlopen(req, timeout=10) as response:
+                if response.status == 200:
+                    pom_content = response.read()
+                    # Verify it's valid XML
+                    pom_text = pom_content.decode("utf-8", errors="ignore")
+                    if "<?xml" in pom_text and "<artifactId>" in pom_text:
+                        if self.verbose:
+                            self._log(
+                                f"Successfully downloaded POM from Maven Central for "
+                                f"{component.group}:{component.name}:{component.version}"
+                            )
+                        return pom_content, False
+        except HTTPError as exc:
+            if exc.code in [401, 403]:
+                return None, True  # Auth required
+            if self.verbose:
+                self._log(
+                    f"Maven Central POM download failed (HTTP {exc.code}): "
+                    f"{component.group}:{component.name}:{component.version}"
+                )
+        except (URLError, Exception) as exc:  # pylint: disable=broad-exception-caught
+            if self.verbose:
+                self._log(
+                    f"Maven Central POM download failed: {exc} "
+                    f"for {component.group}:{component.name}:{component.version}"
+                )
+        return None, False
+
     def _download_pom_direct(self, pom_url: str) -> Tuple[Optional[bytes], bool]:
         """
-        Download a POM file directly via HTTP.
+        Download a POM file directly via HTTP from a git repository.
 
         Args:
             pom_url: URL to the POM file
@@ -363,7 +437,7 @@ class POMDownloader:
         """
         try:
             req = Request(pom_url)
-            req.add_header("User-Agent", "sbom-compile-order/1.1.1")
+            req.add_header("User-Agent", "sbom-compile-order/1.3.0")
             with urlopen(req, timeout=10) as response:
                 if response.status == 200:
                     return response.read(), False
@@ -375,23 +449,31 @@ class POMDownloader:
         return None, False
 
     def download_pom(
-        self, component: Component, repo_url: str
+        self, component: Component, repo_url: str = ""
     ) -> Tuple[Optional[str], bool]:
         """
         Download POM file for a component.
 
+        First tries Maven Central, then falls back to git repository if provided.
+
         Args:
             component: Component to download POM for
-            repo_url: Git repository URL
+            repo_url: Optional git repository URL (for fallback)
 
         Returns:
             Tuple of (filename of cached POM file or None if not found, auth_required bool)
         """
-        if not repo_url:
-            return None, False
-
         # Create a cache key based on component identifier
-        cache_key = component.get_identifier().replace("/", "_").replace(":", "_")
+        # Clean up the identifier by removing query parameters and URL fragments
+        identifier = component.get_identifier()
+        # Remove query parameters (everything after ?)
+        if "?" in identifier:
+            identifier = identifier.split("?")[0]
+        # Remove URL fragments (everything after #)
+        if "#" in identifier:
+            identifier = identifier.split("#")[0]
+        # Replace problematic characters for filename
+        cache_key = identifier.replace("/", "_").replace(":", "_").replace("@", "_")
         cached_pom = self.pom_cache_dir / f"{cache_key}.pom"
 
         # Check if already cached
@@ -401,6 +483,28 @@ class POMDownloader:
 
         # Extract group_id from component
         group_id = f"{component.group}:{component.name}" if component.group else component.name
+
+        # First, try downloading from Maven Central if requested
+        # According to official API: https://central.sonatype.org/search/rest-api-guide/
+        if self.download_from_maven_central and component.group and component.name and component.version:
+            pom_content, auth_required = self._download_pom_from_maven_central(component)
+            if auth_required:
+                return None, True
+            if pom_content:
+                try:
+                    # Verify it matches the component
+                    pom_text = pom_content.decode("utf-8", errors="ignore")
+                    if self._pom_content_matches(pom_text, component.name, group_id):
+                        with open(cached_pom, "wb") as f:
+                            f.write(pom_content)
+                        self._log(f"Cached POM from Maven Central: {cached_pom.name}")
+                        return cached_pom.name, False
+                except Exception as exc:  # pylint: disable=broad-exception-caught
+                    self._log(f"Error processing Maven Central POM: {exc}")
+
+        # Fall back to git repository download if Maven Central not requested or failed
+        if not repo_url:
+            return None, False
 
         if self.clone_repos:
             # Clone repository approach

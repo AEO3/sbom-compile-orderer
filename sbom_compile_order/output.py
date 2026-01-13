@@ -406,8 +406,9 @@ class CSVFormatter(OutputFormatter):
         Always overwrites existing file to ensure it contains exactly the same number
         of rows as components in the SBOM.
 
-        Columns: Order, Group ID, Package Name, Version/Tag, Provided URL, Repo URL,
-        Dependencies, POM, AUTH, Homepage URL, License Type, External Dependency Count
+        Columns: Order, Group ID, Package Name, Version/Tag, PURL, Ref, Type, Scope,
+        Provided URL, Repo URL, Dependencies, POM, AUTH, Homepage URL, License Type,
+        External Dependency Count
 
         Args:
             output_path: Path to output CSV file
@@ -432,6 +433,10 @@ class CSVFormatter(OutputFormatter):
                     "Group ID",
                     "Package Name",
                     "Version/Tag",
+                    "PURL",
+                    "Ref",
+                    "Type",
+                    "Scope",
                     "Provided URL",
                     "Repo URL",
                     "Dependencies",
@@ -496,6 +501,12 @@ class CSVFormatter(OutputFormatter):
             # Get version/tag
             version_tag = comp.version if comp.version else ""
 
+            # Get metadata fields
+            purl = comp.purl if comp.purl else ""
+            ref = comp.ref if comp.ref else ""
+            comp_type = comp.type if comp.type else ""
+            scope = comp.scope if comp.scope else ""
+
             # Get provided URL (original source URL)
             provided_url = comp.source_url if hasattr(comp, "source_url") else ""
 
@@ -511,11 +522,13 @@ class CSVFormatter(OutputFormatter):
                     dependency_count = 0
 
             # Download POM if downloader provided
+            # Try Maven Central first (doesn't require repo_url), then fall back to repo_url if provided
             pom_filename = ""
             auth_required = ""
-            if pom_downloader and repo_url:
+            if pom_downloader:
                 try:
-                    pom_result, auth_req = pom_downloader.download_pom(comp, repo_url)
+                    # Try downloading from Maven Central first (works without repo_url)
+                    pom_result, auth_req = pom_downloader.download_pom(comp, repo_url or "")
                     pom_filename = pom_result or ""
                     auth_required = "AUTH" if auth_req else ""
                 except Exception:  # pylint: disable=broad-exception-caught
@@ -573,6 +586,10 @@ class CSVFormatter(OutputFormatter):
                 group_id,
                 package_name,
                 version_tag,
+                purl,
+                ref,
+                comp_type,
+                scope,
                 provided_url,
                 repo_url,
                 dependency_count,
@@ -595,6 +612,10 @@ class CSVFormatter(OutputFormatter):
                 comp_ref,
                 "",
                 "",
+                "",  # PURL
+                comp_ref,  # Ref (use comp_ref as fallback)
+                "",  # Type
+                "",  # Scope
                 "",
                 "",
                 dependency_count,

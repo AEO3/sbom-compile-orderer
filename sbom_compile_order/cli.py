@@ -91,7 +91,19 @@ def main() -> None:
         "-c",
         "--clone-repos",
         action="store_true",
-        help="Clone repositories to find POM files (default: download POMs directly via HTTP)",
+        help="Clone repositories to find POM files",
+    )
+
+    parser.add_argument(
+        "--poms",
+        action="store_true",
+        help="Download POM files from Maven Central",
+    )
+
+    parser.add_argument(
+        "--pull-package",
+        action="store_true",
+        help="Download packages (JARs) from Maven Central",
     )
 
     parser.add_argument(
@@ -227,16 +239,32 @@ def main() -> None:
             if args.verbose:
                 print(log_msg, file=sys.stderr)
 
-        # Initialize POM downloader only if explicitly requested (not for basic CSV)
+        # Initialize POM downloader only if explicitly requested
         pom_downloader = None
-        # POM downloading is optional - only enable if clone-repos flag is set
+        # POM downloading is optional - enable if clone-repos or poms flag is set
         # Basic CSV output works without POM downloading
-        if args.clone_repos:
+        if args.clone_repos or args.poms:
             pom_downloader = POMDownloader(
-                cache_dir, verbose=args.verbose, clone_repos=args.clone_repos
+                cache_dir,
+                verbose=args.verbose,
+                clone_repos=args.clone_repos,
+                download_from_maven_central=args.poms,
             )
-            mode = "clone repositories"
+            mode = "clone repositories" if args.clone_repos else "Maven Central"
             log_msg = f"POM cache directory: {cache_dir} (mode: {mode})"
+            _log_to_file(log_msg, log_file)
+            if args.verbose:
+                print(log_msg, file=sys.stderr)
+
+        # Initialize package downloader if requested
+        package_downloader = None
+        if args.pull_package:
+            from sbom_compile_order.package_downloader import PackageDownloader
+
+            package_downloader = PackageDownloader(
+                cache_dir, verbose=args.verbose
+            )
+            log_msg = f"Package downloader initialized: {cache_dir}"
             _log_to_file(log_msg, log_file)
             if args.verbose:
                 print(log_msg, file=sys.stderr)
@@ -332,6 +360,67 @@ def main() -> None:
             _log_to_file(log_msg, log_file)
             if args.verbose:
                 print(log_msg, file=sys.stderr)
+
+            # Create enhanced CSV if Maven Central lookup is requested
+            if args.maven_central_lookup and maven_central_client:
+                from sbom_compile_order.enhanced_csv import create_enhanced_csv
+
+                # Determine compile-order.csv path (same as output_path)
+                compile_order_path = output_path
+                enhanced_csv_path = cache_dir / "enhanced.csv"
+
+                log_msg = (
+                    f"Creating enhanced CSV from compile-order.csv: {compile_order_path}"
+                )
+                _log_to_file(log_msg, log_file)
+                if args.verbose:
+                    print(log_msg, file=sys.stderr)
+
+                create_enhanced_csv(
+                    compile_order_path,
+                    enhanced_csv_path,
+                    maven_central_client,
+                    verbose=args.verbose,
+                )
+
+                log_msg = f"Enhanced CSV created: {enhanced_csv_path}"
+                _log_to_file(log_msg, log_file)
+                if args.verbose:
+                    print(log_msg, file=sys.stderr)
+
+            # Download packages if requested
+            if package_downloader:
+                log_msg = "Downloading packages from Maven Central..."
+                _log_to_file(log_msg, log_file)
+                if args.verbose:
+                    print(log_msg, file=sys.stderr)
+                for comp_ref in order:
+                    comp = components.get(comp_ref)
+                    if comp:
+                        try:
+                            jar_filename, auth_req = package_downloader.download_package(comp)
+                            if jar_filename:
+                                if args.verbose:
+                                    print(
+                                        f"Downloaded package: {jar_filename}",
+                                        file=sys.stderr,
+                                    )
+                            elif auth_req:
+                                if args.verbose:
+                                    print(
+                                        f"Authentication required for {comp.name}",
+                                        file=sys.stderr,
+                                    )
+                        except Exception as exc:  # pylint: disable=broad-exception-caught
+                            if args.verbose:
+                                print(
+                                    f"Failed to download package for {comp.name}: {exc}",
+                                    file=sys.stderr,
+                                )
+                log_msg = "Package download completed"
+                _log_to_file(log_msg, log_file)
+                if args.verbose:
+                    print(log_msg, file=sys.stderr)
         else:
             # Standard formatting (all at once) for non-CSV formats
             output = formatter.format(
@@ -360,6 +449,7 @@ def main() -> None:
                 print(output)
 
         # Resolve dependencies and create extended CSV if requested
+        # This happens AFTER compile-order.csv is created
         if args.resolve_dependencies and dependency_resolver:
             # Determine compile-order.csv path
             if args.format == "csv":
@@ -371,8 +461,8 @@ def main() -> None:
                 # If not CSV format, use default compile-order.csv in cache
                 compile_order_path = cache_dir / "compile-order.csv"
 
-            # Wait for compile-order.csv to be created if CSV format was used
-            if args.format == "csv" and compile_order_path.exists():
+            # Ensure compile-order.csv exists before processing extended CSV
+            if compile_order_path.exists():
                 log_msg = (
                     f"Generating extended CSV from compile-order.csv: {compile_order_path}"
                 )
@@ -398,7 +488,8 @@ def main() -> None:
             else:
                 log_msg = (
                     f"Warning: compile-order.csv not found at {compile_order_path}. "
-                    f"Extended CSV generation skipped."
+                    f"Extended CSV generation skipped. "
+                    f"Ensure CSV format is used to generate compile-order.csv first."
                 )
                 _log_to_file(log_msg, log_file)
                 if args.verbose:

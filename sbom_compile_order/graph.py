@@ -88,32 +88,37 @@ class DependencyGraph:
             # Perform topological sort
             order = list(nx.topological_sort(self.graph))
             return order, False
-        except nx.NetworkXError as exc:
+        except (nx.NetworkXUnfeasible, nx.NetworkXError) as exc:
             # Circular dependency detected
-            if "circular" in str(exc).lower() or isinstance(
-                exc, nx.NetworkXUnfeasible
-            ):
+            # NetworkXUnfeasible is raised when graph has cycles
+            # Also catch NetworkXError in case it wraps NetworkXUnfeasible
+            if isinstance(exc, nx.NetworkXUnfeasible) or "circular" in str(exc).lower() or "cycle" in str(exc).lower():
                 # Try to get a partial order by removing cycles
                 # Use strongly connected components to detect cycles
-                cycles = list(nx.simple_cycles(self.graph))
-                if cycles:
-                    # Return a partial order by breaking cycles
-                    # Remove edges that create cycles (heuristic: remove last edge)
-                    temp_graph = self.graph.copy()
-                    for cycle in cycles:
-                        if len(cycle) > 1:
-                            # Remove edge from last to first in cycle
-                            temp_graph.remove_edge(cycle[-1], cycle[0])
+                try:
+                    cycles = list(nx.simple_cycles(self.graph))
+                    if cycles:
+                        # Return a partial order by breaking cycles
+                        # Remove edges that create cycles (heuristic: remove last edge)
+                        temp_graph = self.graph.copy()
+                        for cycle in cycles:
+                            if len(cycle) > 1:
+                                # Remove edge from last to first in cycle
+                                temp_graph.remove_edge(cycle[-1], cycle[0])
 
-                    try:
-                        order = list(nx.topological_sort(temp_graph))
-                        return order, True
-                    except nx.NetworkXError:
-                        pass
+                        try:
+                            order = list(nx.topological_sort(temp_graph))
+                            return order, True
+                        except (nx.NetworkXUnfeasible, nx.NetworkXError):
+                            pass
 
-                # If we can't resolve, return nodes in arbitrary order
-                return list(self.graph.nodes()), True
+                    # If we can't resolve, return nodes in arbitrary order
+                    return list(self.graph.nodes()), True
+                except Exception as cycle_exc:  # pylint: disable=broad-exception-caught
+                    # If cycle detection fails, still return nodes with has_circular=True
+                    return list(self.graph.nodes()), True
 
+            # Re-raise if it's not a cycle-related error
             raise
 
     def get_all_dependencies(self, component_ref: str) -> Set[str]:

@@ -123,6 +123,36 @@ def parse_purl(purl: str) -> Tuple[Optional[str], Optional[str], Optional[str], 
 
         # Last part is artifact, everything before is group
         artifact = parts[-1]
+        
+        # Clean artifact name: remove version and file extension if present
+        # Artifact names should not include version (e.g., "config-1.4.0.jar" -> "config")
+        # Common patterns: artifact-version.ext or artifact-version
+        # Try to detect and remove version/extension suffix
+        artifact_clean = artifact
+        # Remove common file extensions (.jar, .pom, .war, .ear, etc.)
+        if "." in artifact_clean:
+            # Check if it looks like artifact-version.ext pattern
+            # Pattern: something like "config-1.4.0.jar" or "my-lib-2.0.1.pom"
+            # We want to extract just "config" or "my-lib"
+            # Version typically follows pattern: numbers, dots, dashes, letters (like "1.4.0", "2.0.1", "1.0-SNAPSHOT")
+            # Try to match pattern: artifact-name-version.ext
+            version_ext_pattern = r"^(.+?)-(\d+[.\w-]+)\.(jar|pom|war|ear|zip|tar\.gz)$"
+            match = re.match(version_ext_pattern, artifact_clean, re.IGNORECASE)
+            if match:
+                # Found pattern like "config-1.4.0.jar", extract just "config"
+                artifact_clean = match.group(1)
+            else:
+                # Try pattern without extension: artifact-version
+                version_pattern = r"^(.+?)-(\d+[.\w-]+)$"
+                match = re.match(version_pattern, artifact_clean)
+                if match:
+                    # Check if the version part looks like a real version (not part of artifact name)
+                    potential_version = match.group(2)
+                    # Versions typically start with a digit
+                    if potential_version and potential_version[0].isdigit():
+                        artifact_clean = match.group(1)
+        
+        artifact = artifact_clean
         group = ".".join(parts[:-1])
 
         # Extract version and type from rest

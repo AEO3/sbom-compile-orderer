@@ -5,6 +5,7 @@ Parses CycloneDX SBOM JSON files and extracts component and dependency informati
 """
 
 import json
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -86,6 +87,122 @@ class Component:
     def __hash__(self) -> int:
         """Hash based on identifier."""
         return hash(self.get_identifier())
+
+
+def parse_purl(purl: str) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """
+    Parse a PURL (Package URL) to extract Maven coordinates.
+
+    PURL format: pkg:maven/{group}/{artifact}@{version}?type={type}
+
+    Args:
+        purl: Package URL string
+
+    Returns:
+        Tuple of (group, artifact, version, type) - all may be None if parsing fails
+    """
+    if not purl or not purl.startswith("pkg:maven/"):
+        return None, None, None, None
+
+    try:
+        # Remove the pkg:maven/ prefix
+        maven_part = purl[10:]  # len("pkg:maven/") = 10
+
+        # Split on @ to separate coordinates from version
+        if "@" in maven_part:
+            coords_part, rest = maven_part.split("@", 1)
+        else:
+            coords_part = maven_part
+            rest = ""
+
+        # Split coordinates on / to get group and artifact
+        # Group may contain multiple segments separated by /
+        parts = coords_part.split("/")
+        if len(parts) < 2:
+            return None, None, None, None
+
+        # Last part is artifact, everything before is group
+        artifact = parts[-1]
+        group = ".".join(parts[:-1])
+
+        # Extract version and type from rest
+        version = None
+        file_type = None
+
+        if rest:
+            # Check for query parameters
+            if "?" in rest:
+                version_part, query_part = rest.split("?", 1)
+                version = version_part if version_part else None
+
+                # Extract type from query parameters
+                type_match = re.search(r"type=([^&]+)", query_part)
+                if type_match:
+                    file_type = type_match.group(1)
+            else:
+                version = rest if rest else None
+
+        return group, artifact, version, file_type
+    except Exception:  # pylint: disable=broad-exception-caught
+        return None, None, None, None
+
+
+def build_maven_central_url(
+    group: str, artifact: str, version: str, file_type: str = "jar"
+) -> str:
+    """
+    Build Maven Central URL from Maven coordinates.
+
+    URL format: https://repo1.maven.org/maven2/{group_path}/{artifact}/{version}/{artifact}-{version}.{extension}
+
+    Args:
+        group: Maven group ID
+        artifact: Maven artifact ID
+        version: Version string
+        file_type: File type (jar, pom, etc.) - defaults to jar
+
+    Returns:
+        Maven Central URL string
+    """
+    if not group or not artifact or not version:
+        return ""
+
+    # Convert groupId to path format (replace dots with slashes)
+    group_path = group.replace(".", "/")
+
+    # Determine file extension from type
+    extension = file_type if file_type else "jar"
+    if extension not in ["jar", "pom", "war", "ear"]:
+        extension = "jar"  # Default to jar
+
+    # Build URL: https://repo1.maven.org/maven2/{group_path}/{artifact}/{version}/{artifact}-{version}.{extension}
+    base_url = "https://repo1.maven.org/maven2"
+    url = f"{base_url}/{group_path}/{artifact}/{version}/{artifact}-{version}.{extension}"
+
+    return url
+
+
+def build_maven_central_url_from_purl(purl: str, file_type: Optional[str] = None) -> str:
+    """
+    Build Maven Central URL from a PURL.
+
+    Args:
+        purl: Package URL string
+        file_type: Optional file type override (jar, pom, etc.)
+                   If not provided, extracts from PURL query parameter
+
+    Returns:
+        Maven Central URL string, or empty string if PURL cannot be parsed
+    """
+    group, artifact, version, purl_type = parse_purl(purl)
+
+    if not group or not artifact or not version:
+        return ""
+
+    # Use provided file_type or extract from PURL
+    extension = file_type if file_type else (purl_type if purl_type else "jar")
+
+    return build_maven_central_url(group, artifact, version, extension)
 
 
 class SBOMParser:

@@ -10,33 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from sbom_compile_order.parser import Component
+from sbom_compile_order.parser import Component, build_maven_central_url_from_purl
 from sbom_compile_order.output import extract_repo_url
-
-
-def _build_maven_central_urls(group: str, artifact: str, version: str) -> tuple[str, str]:
-    """
-    Build Maven Central URLs for POM and JAR files.
-
-    Args:
-        group: Maven group ID
-        artifact: Maven artifact ID
-        version: Version
-
-    Returns:
-        Tuple of (pom_url, jar_url)
-    """
-    if not group or not artifact or not version:
-        return "", ""
-    
-    # Convert groupId to path format (replace dots with slashes)
-    group_path = group.replace(".", "/")
-    base_url = "https://repo1.maven.org/maven2"
-    
-    pom_url = f"{base_url}/{group_path}/{artifact}/{version}/{artifact}-{version}.pom"
-    jar_url = f"{base_url}/{group_path}/{artifact}/{version}/{artifact}-{version}.jar"
-    
-    return pom_url, jar_url
 
 
 def _extract_scm_url_from_pom(pom_content: str) -> str:
@@ -232,11 +207,17 @@ def create_enhanced_csv(
                 if verbose:
                     print(log_msg, file=sys.stderr)
 
-        # Build Maven Central URLs for POM and JAR
+        # Build Maven Central URLs for POM and JAR from PURL
         pom_url_maven = ""
         jar_url_maven = ""
-        if comp.group and comp.name and comp.version:
-            pom_url_maven, jar_url_maven = _build_maven_central_urls(comp.group, comp.name, comp.version)
+        if comp.purl:
+            pom_url_maven = build_maven_central_url_from_purl(comp.purl, file_type="pom")
+            jar_url_maven = build_maven_central_url_from_purl(comp.purl, file_type="jar")
+        elif comp.group and comp.name and comp.version:
+            # Fallback: build URLs from coordinates if PURL not available
+            from sbom_compile_order.parser import build_maven_central_url
+            pom_url_maven = build_maven_central_url(comp.group, comp.name, comp.version, "pom")
+            jar_url_maven = build_maven_central_url(comp.group, comp.name, comp.version, "jar")
         
         # Download POM file if pom_downloader is provided
         pom_filename = ""

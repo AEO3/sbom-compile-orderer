@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 
-from sbom_compile_order.parser import Component
+from sbom_compile_order.parser import Component, build_maven_central_url_from_purl
 
 
 class POMDownloader:
@@ -383,33 +383,37 @@ class POMDownloader:
             return None, False
 
         try:
-            # Convert groupId to path format (replace dots with slashes)
-            # e.g., org.jboss.jdeparser -> org/jboss/jdeparser
-            group_path = component.group.replace(".", "/")
-            artifact_id = component.name
-            version = component.version
-
-            # Build direct Maven Central URL
-            # Format: https://repo1.maven.org/maven2/{groupPath}/{artifactId}/{version}/{artifactId}-{version}.pom
-            base_url = "https://repo1.maven.org/maven2"
-            pom_url = f"{base_url}/{group_path}/{artifact_id}/{version}/{artifact_id}-{version}.pom"
+            # Build Maven Central URL from component PURL or coordinates
+            if component.purl:
+                pom_url = build_maven_central_url_from_purl(component.purl, file_type="pom")
+            else:
+                # Fallback: build URL from coordinates if PURL not available
+                from sbom_compile_order.parser import build_maven_central_url
+                pom_url = build_maven_central_url(component.group, component.name, component.version, "pom")
+            
+            if not pom_url:
+                self._log(
+                    f"[POM DOWNLOAD] ERROR: Failed to build URL for "
+                    f"{component.group}:{component.name}:{component.version}"
+                )
+                return None, False
 
             # Log detailed download information
             self._log(
                 f"[POM DOWNLOAD] Starting download for {component.group}:{component.name}:{component.version}"
             )
-            self._log(f"[POM DOWNLOAD] Group path: {group_path}")
-            self._log(f"[POM DOWNLOAD] Artifact ID: {artifact_id}")
-            self._log(f"[POM DOWNLOAD] Version: {version}")
+            self._log(f"[POM DOWNLOAD] Group: {component.group}")
+            self._log(f"[POM DOWNLOAD] Artifact ID: {component.name}")
+            self._log(f"[POM DOWNLOAD] Version: {component.version}")
             self._log(f"[POM DOWNLOAD] Full URL: {pom_url}")
             self._log(f"[POM DOWNLOAD] Executing: urlopen(Request('{pom_url}'), timeout=30)")
 
             req = Request(pom_url)
-            req.add_header("User-Agent", "sbom-compile-order/1.3.1")
+            req.add_header("User-Agent", "sbom-compile-order/1.4.0")
             req.add_header("Accept", "application/xml, text/xml, */*")
             
             # Log request details
-            self._log(f"[POM DOWNLOAD] Request headers: User-Agent=sbom-compile-order/1.3.1, Accept=application/xml, text/xml, */*")
+            self._log(f"[POM DOWNLOAD] Request headers: User-Agent=sbom-compile-order/1.4.0, Accept=application/xml, text/xml, */*")
             
             # Create SSL context that accepts default certificates
             ssl_context = ssl.create_default_context()
@@ -533,7 +537,7 @@ class POMDownloader:
         """
         try:
             req = Request(pom_url)
-            req.add_header("User-Agent", "sbom-compile-order/1.3.1")
+            req.add_header("User-Agent", "sbom-compile-order/1.4.0")
             with urlopen(req, timeout=10) as response:
                 if response.status == 200:
                     return response.read(), False

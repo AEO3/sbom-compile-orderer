@@ -367,7 +367,7 @@ class DependencyResolver:
 
         try:
             request = Request(url)
-            request.add_header("User-Agent", "sbom-compile-order/1.3.1")
+            request.add_header("User-Agent", "sbom-compile-order/1.4.0")
 
             with urlopen(request, timeout=15) as response:
                 html_content = response.read().decode("utf-8")
@@ -418,7 +418,7 @@ class DependencyResolver:
 
         try:
             request = Request(url)
-            request.add_header("User-Agent", "sbom-compile-order/1.3.1")
+            request.add_header("User-Agent", "sbom-compile-order/1.4.0")
 
             with urlopen(request, timeout=15) as response:
                 html_content = response.read().decode("utf-8")

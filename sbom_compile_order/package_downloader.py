@@ -11,7 +11,7 @@ from typing import Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from sbom_compile_order.parser import Component
+from sbom_compile_order.parser import Component, build_maven_central_url_from_purl
 
 
 class PackageDownloader:
@@ -46,23 +46,23 @@ class PackageDownloader:
         with open(self.log_file, "a", encoding="utf-8") as f:
             f.write(f"{log_entry}\n")
 
-    def _get_maven_central_jar_url(self, group: str, artifact: str, version: str) -> str:
+    def _get_maven_central_jar_url(self, component: Component) -> str:
         """
-        Construct the Maven Central direct JAR download URL.
+        Construct the Maven Central direct JAR download URL from component PURL.
 
         Args:
-            group: Maven group ID
-            artifact: Maven artifact ID
-            version: Maven version
+            component: Component object with PURL or coordinates
 
         Returns:
             URL string for downloading the JAR from Maven Central
         """
-        group_path = group.replace(".", "/")
-        return (
-            f"https://search.maven.org/remotecontent?filepath="
-            f"{group_path}/{artifact}/{version}/{artifact}-{version}.jar"
-        )
+        if component.purl:
+            return build_maven_central_url_from_purl(component.purl, file_type="jar")
+        elif component.group and component.name and component.version:
+            # Fallback: build URL from coordinates if PURL not available
+            from sbom_compile_order.parser import build_maven_central_url
+            return build_maven_central_url(component.group, component.name, component.version, "jar")
+        return ""
 
     def download_package(self, component: Component) -> Tuple[Optional[str], bool]:
         """
@@ -96,14 +96,15 @@ class PackageDownloader:
             return cached_jar.name, False
 
         # Download from Maven Central
-        jar_url = self._get_maven_central_jar_url(
-            component.group, component.name, component.version
-        )
+        jar_url = self._get_maven_central_jar_url(component)
+        if not jar_url:
+            self._log(f"Failed to build JAR URL for {component.name}")
+            return None, False
         self._log(f"Downloading JAR from Maven Central: {jar_url}")
 
         try:
             req = Request(jar_url)
-            req.add_header("User-Agent", "sbom-compile-order/1.3.1")
+            req.add_header("User-Agent", "sbom-compile-order/1.4.0")
             with urlopen(req, timeout=30) as response:
                 if response.status == 200:
                     jar_content = response.read()

@@ -398,6 +398,19 @@ class POMDownloader:
                 )
                 if component.purl:
                     self._log(f"[POM DOWNLOAD] Component PURL: {component.purl}")
+                else:
+                    self._log(
+                        f"[POM DOWNLOAD] Component has no PURL, attempted fallback with "
+                        f"group={component.group}, name={component.name}, version={component.version}"
+                    )
+                return None, False
+
+            # Validate URL is not empty or None before proceeding
+            if not pom_url or pom_url.strip() == "":
+                self._log(
+                    f"[POM DOWNLOAD] ERROR: Generated empty URL for "
+                    f"{component.group}:{component.name}:{component.version}"
+                )
                 return None, False
 
             # Log detailed download information
@@ -576,6 +589,10 @@ class POMDownloader:
         Returns:
             Tuple of (POM file content as bytes or None if failed, auth_required bool)
         """
+        if not pom_url or not pom_url.strip():
+            self._log(f"[POM DOWNLOAD] ERROR: Empty or invalid URL provided to _download_pom_direct")
+            return None, False
+
         self._log(f"[URL USING TO DOWNLOAD] {pom_url}")
         try:
             req = Request(pom_url)

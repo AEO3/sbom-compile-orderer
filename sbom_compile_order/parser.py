@@ -213,18 +213,21 @@ def build_maven_central_url(
     return url
 
 
-def build_maven_central_url_from_purl(purl: str, file_type: Optional[str] = None) -> str:
+def build_maven_central_url_from_purl(purl: Optional[str], file_type: Optional[str] = None) -> str:
     """
     Build Maven Central URL from a PURL.
 
     Args:
-        purl: Package URL string
+        purl: Package URL string (may be None or empty)
         file_type: Optional file type override (jar, pom, etc.)
                    If not provided, extracts from PURL query parameter
 
     Returns:
         Maven Central URL string, or empty string if PURL cannot be parsed
     """
+    if not purl:
+        return ""
+
     group, artifact, version, purl_type = parse_purl(purl)
 
     if not group or not artifact or not version:

@@ -565,6 +565,7 @@ class CSVFormatter(OutputFormatter):
             # Detect cyclical dependencies for this component
             cyclical_dependencies = ""
             if has_circular and graph is not None:
+                import sys
                 try:
                     # Import DependencyGraph to use cycle detection methods
                     # We need to create a temporary DependencyGraph instance to use its methods
@@ -574,9 +575,15 @@ class CSVFormatter(OutputFormatter):
                         # Get all simple cycles that include this component
                         try:
                             all_cycles = list(nx.simple_cycles(graph))
+                            log_msg = f"[CYCLE DETECTION] Checking component {comp_ref}: found {len(all_cycles)} total cycles"
+                            print(log_msg, file=sys.stderr)
+                            
                             component_cycles = [
                                 cycle for cycle in all_cycles if comp_ref in cycle
                             ]
+                            log_msg = f"[CYCLE DETECTION] Component {comp_ref} is in {len(component_cycles)} cycle(s)"
+                            print(log_msg, file=sys.stderr)
+                            
                             if component_cycles:
                                 # Format cycles as: "comp1->comp2->comp3->comp1; comp4->comp5->comp4"
                                 cycle_strings = []

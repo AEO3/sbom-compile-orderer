@@ -301,21 +301,32 @@ def main() -> None:
         _log_to_file(log_msg, log_file)
         if args.verbose:
             print(log_msg, file=sys.stderr)
+        # Always log cycle detection (not just in verbose mode)
+        log_msg = f"[CYCLE DETECTION] Checking for cycles: has_circular={has_circular}"
+        _log_to_file(log_msg, log_file)
+        print(log_msg, file=sys.stderr)
+        
         if has_circular:
             log_msg = "WARNING: Circular dependencies detected!"
             _log_to_file(log_msg, log_file)
-            if args.verbose:
-                print(log_msg, file=sys.stderr)
+            print(log_msg, file=sys.stderr)
             
             # Log all cycles with package details
             try:
                 import networkx as nx
+                log_msg = "[CYCLE DETECTION] Attempting to detect cycles using NetworkX..."
+                _log_to_file(log_msg, log_file)
+                print(log_msg, file=sys.stderr)
+                
                 cycles = list(nx.simple_cycles(graph.graph))
+                log_msg = f"[CYCLE DETECTION] NetworkX found {len(cycles)} cycle(s)"
+                _log_to_file(log_msg, log_file)
+                print(log_msg, file=sys.stderr)
+                
                 if cycles:
                     log_msg = f"[CYCLE DETECTION] Found {len(cycles)} cycle(s) in dependency graph"
                     _log_to_file(log_msg, log_file)
-                    if args.verbose:
-                        print(log_msg, file=sys.stderr)
+                    print(log_msg, file=sys.stderr)
                     
                     for idx, cycle in enumerate(cycles, 1):
                         cycle_str = "->".join(cycle)
@@ -330,20 +341,31 @@ def main() -> None:
                                 package_name = f"{comp.group}:{comp.name}" if comp.group else comp.name
                                 cycle_packages.append(f"{package_name} ({comp_ref})")
                             else:
-                                cycle_packages.append(comp_ref)
+                                cycle_packages.append(f"UNKNOWN ({comp_ref})")
                         
                         log_msg = (
                             f"[CYCLE DETECTION] Cycle {idx}: {cycle_str} | "
                             f"Packages: {', '.join(cycle_packages)}"
                         )
                         _log_to_file(log_msg, log_file)
-                        if args.verbose:
-                            print(log_msg, file=sys.stderr)
+                        print(log_msg, file=sys.stderr)
+                else:
+                    log_msg = "[CYCLE DETECTION] No cycles found by NetworkX (but has_circular=True)"
+                    _log_to_file(log_msg, log_file)
+                    print(log_msg, file=sys.stderr)
             except Exception as cycle_exc:  # pylint: disable=broad-exception-caught
+                import traceback
+                tb_str = traceback.format_exc()
                 log_msg = f"[CYCLE DETECTION] Error detecting cycles: {cycle_exc}"
                 _log_to_file(log_msg, log_file)
-                if args.verbose:
-                    print(log_msg, file=sys.stderr)
+                print(log_msg, file=sys.stderr)
+                log_msg = f"[CYCLE DETECTION] Traceback: {tb_str}"
+                _log_to_file(log_msg, log_file)
+                print(log_msg, file=sys.stderr)
+        else:
+            log_msg = "[CYCLE DETECTION] No circular dependencies detected (has_circular=False)"
+            _log_to_file(log_msg, log_file)
+            print(log_msg, file=sys.stderr)
 
         # Initialize POM downloader if requested
         pom_downloader = None

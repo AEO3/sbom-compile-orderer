@@ -100,6 +100,7 @@ class PackageDownloader:
         if not jar_url:
             self._log(f"Failed to build JAR URL for {component.name}")
             return None, False
+        self._log(f"[URL USING TO DOWNLOAD] {jar_url}")
         self._log(f"Downloading JAR from Maven Central: {jar_url}")
 
         try:

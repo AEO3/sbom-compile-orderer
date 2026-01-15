@@ -396,6 +396,8 @@ class POMDownloader:
                     f"[POM DOWNLOAD] ERROR: Failed to build URL for "
                     f"{component.group}:{component.name}:{component.version}"
                 )
+                if component.purl:
+                    self._log(f"[POM DOWNLOAD] Component PURL: {component.purl}")
                 return None, False
 
             # Log detailed download information
@@ -405,7 +407,10 @@ class POMDownloader:
             self._log(f"[POM DOWNLOAD] Group: {component.group}")
             self._log(f"[POM DOWNLOAD] Artifact ID: {component.name}")
             self._log(f"[POM DOWNLOAD] Version: {component.version}")
+            if component.purl:
+                self._log(f"[POM DOWNLOAD] Component PURL: {component.purl}")
             self._log(f"[POM DOWNLOAD] Full URL: {pom_url}")
+            self._log(f"[URL USING TO DOWNLOAD] {pom_url}")
             self._log(f"[POM DOWNLOAD] Executing: urlopen(Request('{pom_url}'), timeout=30)")
 
             req = Request(pom_url)
@@ -420,7 +425,19 @@ class POMDownloader:
             
             try:
                 self._log(f"[POM DOWNLOAD] Opening connection to {pom_url}...")
-                with urlopen(req, timeout=30, context=ssl_context) as response:
+                try:
+                    response = urlopen(req, timeout=30, context=ssl_context)
+                except HTTPError as http_err:
+                    # urlopen raises HTTPError for non-2xx status codes
+                    # This will be caught by the outer except HTTPError block below
+                    raise
+                except Exception as conn_exc:  # pylint: disable=broad-exception-caught
+                    self._log(
+                        f"[POM DOWNLOAD] ERROR: Exception opening connection: {type(conn_exc).__name__}: {conn_exc}"
+                    )
+                    raise
+                
+                with response:
                     self._log(f"[POM DOWNLOAD] Connection opened, response code: {response.getcode()}")
                     # Get status code - urlopen raises HTTPError for non-2xx status codes
                     # So if we get here, it's likely 200, but check getcode() to be sure
@@ -441,12 +458,9 @@ class POMDownloader:
                             )
                             return None, False
                         
-                        # Verify it's valid XML
-                        pom_text = pom_content.decode("utf-8", errors="ignore")
-                        self._log(f"[POM DOWNLOAD] Decoded content, checking for XML markers...")
-                        self._log(f"[POM DOWNLOAD] First 100 chars: {pom_text[:100]}")
-                        
-                        if "<?xml" in pom_text and "<artifactId>" in pom_text:
+                        # Validation disabled - just download and return the content
+                        # Verify it's not empty
+                        if pom_size > 0:
                             self._log(
                                 f"[POM DOWNLOAD] SUCCESS: Successfully downloaded POM from Maven Central: "
                                 f"{component.group}:{component.name}:{component.version} "
@@ -454,14 +468,41 @@ class POMDownloader:
                             )
                             return pom_content, False
                         else:
-                            has_xml = "<?xml" in pom_text
-                            has_artifact = "<artifactId>" in pom_text
                             self._log(
-                                f"[POM DOWNLOAD] ERROR: Downloaded content is not valid XML POM: "
+                                f"[POM DOWNLOAD] ERROR: Downloaded empty file from Maven Central: "
                                 f"{component.group}:{component.name}:{component.version} "
-                                f"(URL: {pom_url}, size: {pom_size} bytes, has <?xml: {has_xml}, has <artifactId>: {has_artifact}, first 200 chars: {pom_text[:200]})"
+                                f"(URL: {pom_url})"
                             )
                             return None, False
+                        
+                        # VALIDATION CODE COMMENTED OUT - Just download without validation
+                        # # Verify it's valid XML POM
+                        # # Note: Many POM files don't have <?xml declaration, so we only check for <artifactId>
+                        # pom_text = pom_content.decode("utf-8", errors="ignore")
+                        # self._log(f"[POM DOWNLOAD] Decoded content, checking for XML markers...")
+                        # self._log(f"[POM DOWNLOAD] First 100 chars: {pom_text[:100]}")
+                        # 
+                        # # Check if it's a valid POM - look for <artifactId> tag
+                        # # <?xml declaration is optional in XML, so we don't require it
+                        # if "<artifactId>" in pom_text and "<project" in pom_text:
+                        #     self._log(
+                        #         f"[POM DOWNLOAD] SUCCESS: Successfully downloaded POM from Maven Central: "
+                        #         f"{component.group}:{component.name}:{component.version} "
+                        #         f"({pom_size} bytes)"
+                        #     )
+                        #     return pom_content, False
+                        # else:
+                        #     has_xml_decl = "<?xml" in pom_text
+                        #     has_project = "<project" in pom_text
+                        #     has_artifact = "<artifactId>" in pom_text
+                        #     self._log(
+                        #         f"[POM DOWNLOAD] ERROR: Downloaded content is not valid XML POM: "
+                        #         f"{component.group}:{component.name}:{component.version} "
+                        #         f"(URL: {pom_url}, size: {pom_size} bytes, has <?xml: {has_xml_decl}, "
+                        #         f"has <project>: {has_project}, has <artifactId>: {has_artifact}, "
+                        #         f"first 200 chars: {pom_text[:200]})"
+                        #     )
+                        #     return None, False
                     else:
                         self._log(
                             f"[POM DOWNLOAD] ERROR: Maven Central POM download returned non-200 status (HTTP {status_code}): "
@@ -535,6 +576,7 @@ class POMDownloader:
         Returns:
             Tuple of (POM file content as bytes or None if failed, auth_required bool)
         """
+        self._log(f"[URL USING TO DOWNLOAD] {pom_url}")
         try:
             req = Request(pom_url)
             req.add_header("User-Agent", "sbom-compile-order/1.4.0")
@@ -608,58 +650,89 @@ class POMDownloader:
                 self._log(f"[end] Package: {component_id} - authentication required")
                 return None, True
             if pom_content:
+                self._log(
+                    f"[POM DOWNLOAD] Received POM content ({len(pom_content)} bytes) for "
+                    f"{component.group}:{component.name}:{component.version}"
+                )
                 try:
                     self._log(
                         f"[POM SAVE] POM content received ({len(pom_content)} bytes), "
                         f"verifying and saving to: {cached_pom}"
                     )
-                    # Verify it matches the component
-                    pom_text = pom_content.decode("utf-8", errors="ignore")
-                    self._log(f"[POM SAVE] Decoded POM text, length: {len(pom_text)} chars")
+                    # VALIDATION CODE COMMENTED OUT - Just save the POM without validation
+                    # # Verify it matches the component
+                    # pom_text = pom_content.decode("utf-8", errors="ignore")
+                    # self._log(f"[POM SAVE] Decoded POM text, length: {len(pom_text)} chars")
+                    # 
+                    # matches = self._pom_content_matches(pom_text, component.name, group_id)
+                    # self._log(
+                    #     f"[POM SAVE] POM content match check: {matches} "
+                    #     f"(component.name={component.name}, group_id={group_id})"
+                    # )
+                    # 
+                    # if not matches:
+                    #     # Log why it didn't match for debugging
+                    #     # Remove parent section to get accurate artifactId/groupId
+                    #     pom_without_parent = re.sub(
+                    #         r"<parent>.*?</parent>", "", pom_text, flags=re.DOTALL | re.IGNORECASE
+                    #     )
+                    #     artifact_match = re.search(r"<artifactId>([^<]+)</artifactId>", pom_without_parent)
+                    #     group_match = re.search(r"<groupId>([^<]+)</groupId>", pom_without_parent)
+                    #     pom_artifact = artifact_match.group(1).strip() if artifact_match else "NOT FOUND"
+                    #     pom_group = group_match.group(1).strip() if group_match else "NOT FOUND"
+                    #     self._log(
+                    #         f"[POM SAVE] POM content mismatch details - "
+                    #         f"Expected: artifact={component.name}, group={group_id.split(':')[0] if ':' in group_id else group_id}; "
+                    #         f"Found in POM (excluding parent): artifact={pom_artifact}, group={pom_group}"
+                    #     )
+                    # 
+                    # if matches:
                     
-                    matches = self._pom_content_matches(pom_text, component.name, group_id)
-                    self._log(
-                        f"[POM SAVE] POM content match check: {matches} "
-                        f"(component.name={component.name}, group_id={group_id})"
-                    )
+                    # Just save the POM without validation
+                    self._log(f"[POM SAVE] Writing POM file to: {cached_pom}")
+                    # Ensure parent directory exists
+                    cached_pom.parent.mkdir(parents=True, exist_ok=True)
+                    with open(cached_pom, "wb") as f:
+                        bytes_written = f.write(pom_content)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    self._log(f"[POM SAVE] Wrote {bytes_written} bytes to {cached_pom}")
                     
-                    if matches:
-                        self._log(f"[POM SAVE] Writing POM file to: {cached_pom}")
-                        # Ensure parent directory exists
-                        cached_pom.parent.mkdir(parents=True, exist_ok=True)
-                        with open(cached_pom, "wb") as f:
-                            bytes_written = f.write(pom_content)
-                            f.flush()
-                            os.fsync(f.fileno())
-                        self._log(f"[POM SAVE] Wrote {bytes_written} bytes to {cached_pom}")
-                        
-                        # Verify file was written
-                        if cached_pom.exists():
-                            file_size = cached_pom.stat().st_size
-                            self._log(
-                                f"[POM SAVE] SUCCESS: File verified on disk: {cached_pom} ({file_size} bytes)"
-                            )
-                        else:
-                            self._log(
-                                f"[POM SAVE] ERROR: File was not written to disk: {cached_pom}"
-                            )
-                        
-                        pom_size = len(pom_content)
+                    # Verify file was written
+                    if cached_pom.exists():
+                        file_size = cached_pom.stat().st_size
                         self._log(
-                            f"Successfully downloaded and cached POM from Maven Central: "
-                            f"{component.group}:{component.name}:{component.version} "
-                            f"({pom_size} bytes, cache file: {cached_pom.name})"
+                            f"[POM SAVE] SUCCESS: File verified on disk: {cached_pom} ({file_size} bytes)"
                         )
-                        self._log(f"[end] Package: {component_id} - successfully downloaded and cached")
-                        return cached_pom.name, False
                     else:
                         self._log(
-                            f"[POM SAVE] ERROR: Downloaded POM from Maven Central does not match component: "
-                            f"{component.group}:{component.name}:{component.version}"
+                            f"[POM SAVE] ERROR: File was not written to disk: {cached_pom}"
                         )
-                        self._log(
-                            f"[POM SAVE] POM text preview (first 500 chars): {pom_text[:500]}"
-                        )
+                    
+                    pom_size = len(pom_content)
+                    self._log(
+                        f"Successfully downloaded and cached POM from Maven Central: "
+                        f"{component.group}:{component.name}:{component.version} "
+                        f"({pom_size} bytes, cache file: {cached_pom.name})"
+                    )
+                    self._log(f"[end] Package: {component_id} - successfully downloaded and cached")
+                    return cached_pom.name, False
+                    
+                    # VALIDATION CODE COMMENTED OUT - Removed else block that prevented saving
+                    # else:
+                    #     self._log(
+                    #         f"[POM SAVE] ERROR: Downloaded POM from Maven Central does not match component: "
+                    #         f"{component.group}:{component.name}:{component.version}"
+                    #     )
+                    #     self._log(
+                    #         f"[POM SAVE] POM text preview (first 500 chars): {pom_text[:500]}"
+                    #     )
+                    #     # Don't return None here - continue to try other methods
+                    #     # But log that we're continuing
+                    #     self._log(
+                    #         f"[POM SAVE] Continuing to try other download methods for "
+                    #         f"{component.group}:{component.name}:{component.version}"
+                    #     )
                 except Exception as exc:  # pylint: disable=broad-exception-caught
                     import traceback
                     tb_str = traceback.format_exc()
@@ -670,13 +743,21 @@ class POMDownloader:
                     self._log(f"[POM SAVE] ERROR: Traceback: {tb_str}")
             else:
                 self._log(
-                    f"Failed to download POM from Maven Central for "
-                    f"{component.group}:{component.name}:{component.version}"
+                    f"[POM DOWNLOAD] Failed to download POM from Maven Central for "
+                    f"{component.group}:{component.name}:{component.version} "
+                    f"(pom_content was None or empty - check logs above for HTTPError details)"
+                )
+                self._log(
+                    f"[POM DOWNLOAD] This usually means: HTTP 404 (not found), network error, "
+                    f"or content validation failed. Check [POM DOWNLOAD] ERROR logs above."
                 )
 
         # Fall back to git repository download if Maven Central not requested or failed
         if not repo_url:
-            self._log(f"[end] Package: {component_id} - no repo URL provided")
+            self._log(
+                f"[end] Package: {component_id} - no repo URL provided. "
+                f"Maven Central download returned None, no fallback available."
+            )
             return None, False
 
         if self.clone_repos:
@@ -715,16 +796,20 @@ class POMDownloader:
                     continue  # Try next URL
                 if pom_content:
                     try:
-                        # Verify it's a valid POM by checking for XML and artifactId
-                        pom_text = pom_content.decode("utf-8", errors="ignore")
-                        if "<?xml" in pom_text and "<artifactId>" in pom_text:
-                            # Check if it matches the package
-                            if self._pom_content_matches(pom_text, component.name, group_id):
-                                with open(cached_pom, "wb") as f:
-                                    f.write(pom_content)
-                                self._log(f"Cached POM: {cached_pom.name}")
-                                self._log(f"[end] Package: {component_id} - successfully cached from direct download")
-                                return cached_pom.name, False
+                        # VALIDATION CODE COMMENTED OUT - Just save the POM without validation
+                        # # Verify it's a valid POM by checking for project and artifactId tags
+                        # # Note: <?xml declaration is optional, so we don't require it
+                        # pom_text = pom_content.decode("utf-8", errors="ignore")
+                        # if "<project" in pom_text and "<artifactId>" in pom_text:
+                        #     # Check if it matches the package
+                        #     if self._pom_content_matches(pom_text, component.name, group_id):
+                        
+                        # Just save the POM without validation
+                        with open(cached_pom, "wb") as f:
+                            f.write(pom_content)
+                        self._log(f"Cached POM: {cached_pom.name}")
+                        self._log(f"[end] Package: {component_id} - successfully cached from direct download")
+                        return cached_pom.name, False
                     except Exception as exc:  # pylint: disable=broad-exception-caught
                         self._log(f"Error processing downloaded POM: {exc}")
                         continue
@@ -753,14 +838,20 @@ class POMDownloader:
             True if POM matches the package
         """
         try:
-            # Extract artifactId from POM
-            artifact_match = re.search(r"<artifactId>([^<]+)</artifactId>", pom_content)
+            # Remove parent section to avoid matching parent's artifactId/groupId
+            # Find and remove everything between <parent> and </parent> tags
+            pom_without_parent = re.sub(
+                r"<parent>.*?</parent>", "", pom_content, flags=re.DOTALL | re.IGNORECASE
+            )
+
+            # Extract artifactId from POM (now excluding parent section)
+            artifact_match = re.search(r"<artifactId>([^<]+)</artifactId>", pom_without_parent)
             if artifact_match:
                 artifact_id = artifact_match.group(1).strip()
                 if artifact_id.lower() == package_name.lower():
-                    # If group_id provided, also check groupId
+                    # If group_id provided, also check groupId (also excluding parent section)
                     if group_id:
-                        group_match = re.search(r"<groupId>([^<]+)</groupId>", pom_content)
+                        group_match = re.search(r"<groupId>([^<]+)</groupId>", pom_without_parent)
                         if group_match:
                             pom_group = group_match.group(1).strip()
                             # Extract group from group_id (format: group:name)

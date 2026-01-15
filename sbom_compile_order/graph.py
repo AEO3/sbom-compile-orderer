@@ -168,6 +168,56 @@ class DependencyGraph:
         except nx.NetworkXUnfeasible:
             return True
 
+    def get_cycles_for_component(self, component_ref: str) -> List[List[str]]:
+        """
+        Get all cycles that involve a specific component.
+
+        Args:
+            component_ref: Reference of the component to check
+
+        Returns:
+            List of cycles (each cycle is a list of component refs)
+        """
+        if component_ref not in self.graph:
+            return []
+
+        try:
+            # Get all simple cycles in the graph
+            all_cycles = list(nx.simple_cycles(self.graph))
+            # Filter to only cycles that include this component
+            component_cycles = [
+                cycle for cycle in all_cycles if component_ref in cycle
+            ]
+            return component_cycles
+        except Exception:  # pylint: disable=broad-exception-caught
+            return []
+
+    def format_cycles_for_component(self, component_ref: str) -> str:
+        """
+        Format cycles for a component as a string for CSV output.
+
+        Args:
+            component_ref: Reference of the component to check
+
+        Returns:
+            String representation of cycles, or empty string if no cycles
+        """
+        cycles = self.get_cycles_for_component(component_ref)
+        if not cycles:
+            return ""
+
+        # Format cycles as: "cycle1_component1->cycle1_component2->...; cycle2_component1->..."
+        cycle_strings = []
+        for cycle in cycles:
+            # Create a cycle string: comp1->comp2->comp3->comp1
+            cycle_str = "->".join(cycle)
+            # Close the cycle by adding the first component at the end
+            if len(cycle) > 1:
+                cycle_str += f"->{cycle[0]}"
+            cycle_strings.append(cycle_str)
+
+        return "; ".join(cycle_strings)
+
     def get_statistics(self) -> Dict:
         """
         Get graph statistics.

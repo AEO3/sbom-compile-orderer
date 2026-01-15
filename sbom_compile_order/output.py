@@ -409,7 +409,7 @@ class CSVFormatter(OutputFormatter):
 
         Columns: Order, Group ID, Package Name, Version/Tag, PURL, Ref, Type, Scope,
         Provided URL, Repo URL, Dependencies, POM, AUTH, Homepage URL, License Type,
-        External Dependency Count
+        External Dependency Count, Cyclical Dependencies
 
         Args:
             output_path: Path to output CSV file
@@ -446,6 +446,7 @@ class CSVFormatter(OutputFormatter):
                     "Homepage URL",
                     "License Type",
                     "External Dependency Count",
+                    "Cyclical Dependencies",
                 ]
             )
 
@@ -460,6 +461,7 @@ class CSVFormatter(OutputFormatter):
                     pom_downloader,
                     maven_central_client,
                     dependency_resolver,
+                    has_circular,
                 )
                 writer.writerow(row)
                 file.flush()  # Ensure row is written immediately
@@ -474,6 +476,7 @@ class CSVFormatter(OutputFormatter):
         pom_downloader: Optional[object],
         maven_central_client: Optional[object] = None,
         dependency_resolver: Optional[object] = None,
+        has_circular: bool = False,
     ) -> List:
         """
         Format a single CSV row.
@@ -521,8 +524,24 @@ class CSVFormatter(OutputFormatter):
             dependency_count = 0
             if graph is not None and comp_ref in graph:
                 try:
-                    dependency_count = len(list(graph.predecessors(comp_ref)))
+                    # Handle potential cycles gracefully - if graph has cycles,
+                    # NetworkX may raise errors during iteration
+                    predecessors = list(graph.predecessors(comp_ref))
+                    dependency_count = len(predecessors)
+                except (RuntimeError, ValueError) as graph_exc:
+                    # NetworkX can raise RuntimeError or ValueError if graph has cycles
+                    # or is modified during iteration
+                    if "cycle" in str(graph_exc).lower() or "iteration" in str(graph_exc).lower():
+                        # Graph has cycles - try to get count safely
+                        try:
+                            # Use in_degree as a safer alternative
+                            dependency_count = graph.in_degree(comp_ref)
+                        except Exception:  # pylint: disable=broad-exception-caught
+                            dependency_count = 0
+                    else:
+                        dependency_count = 0
                 except Exception:  # pylint: disable=broad-exception-caught
+                    # Any other error - default to 0
                     dependency_count = 0
 
             # Download POM file if downloader is available
@@ -542,6 +561,37 @@ class CSVFormatter(OutputFormatter):
             homepage_url = ""
             license_type = ""
             external_dependency_count = 0
+
+            # Detect cyclical dependencies for this component
+            cyclical_dependencies = ""
+            if has_circular and graph is not None:
+                try:
+                    # Import DependencyGraph to use cycle detection methods
+                    # We need to create a temporary DependencyGraph instance to use its methods
+                    # Or we can detect cycles directly using NetworkX
+                    import networkx as nx
+                    if comp_ref in graph:
+                        # Get all simple cycles that include this component
+                        try:
+                            all_cycles = list(nx.simple_cycles(graph))
+                            component_cycles = [
+                                cycle for cycle in all_cycles if comp_ref in cycle
+                            ]
+                            if component_cycles:
+                                # Format cycles as: "comp1->comp2->comp3->comp1; comp4->comp5->comp4"
+                                cycle_strings = []
+                                for cycle in component_cycles:
+                                    cycle_str = "->".join(cycle)
+                                    # Close the cycle
+                                    if len(cycle) > 1:
+                                        cycle_str += f"->{cycle[0]}"
+                                    cycle_strings.append(cycle_str)
+                                cyclical_dependencies = "; ".join(cycle_strings)
+                        except Exception:  # pylint: disable=broad-exception-caught
+                            # If cycle detection fails, mark as having cycles but can't list them
+                            cyclical_dependencies = "Cycle detected (unable to list components)"
+                except Exception:  # pylint: disable=broad-exception-caught
+                    pass
             
             if comp.group and comp.name and comp.version:
                 # Try dependency resolver first (mvnrepository.com) as it has better data
@@ -601,15 +651,57 @@ class CSVFormatter(OutputFormatter):
                 homepage_url,
                 license_type,
                 external_dependency_count,
+                cyclical_dependencies,
             ]
         else:
             # Component not found, use ref as group ID
             dependency_count = 0
+            cyclical_dependencies = ""
             if graph is not None and comp_ref in graph:
                 try:
-                    dependency_count = len(list(graph.predecessors(comp_ref)))
+                    # Handle potential cycles gracefully - if graph has cycles,
+                    # NetworkX may raise errors during iteration
+                    predecessors = list(graph.predecessors(comp_ref))
+                    dependency_count = len(predecessors)
+                except (RuntimeError, ValueError) as graph_exc:
+                    # NetworkX can raise RuntimeError or ValueError if graph has cycles
+                    # or is modified during iteration
+                    if "cycle" in str(graph_exc).lower() or "iteration" in str(graph_exc).lower():
+                        # Graph has cycles - try to get count safely
+                        try:
+                            # Use in_degree as a safer alternative
+                            dependency_count = graph.in_degree(comp_ref)
+                        except Exception:  # pylint: disable=broad-exception-caught
+                            dependency_count = 0
+                    else:
+                        dependency_count = 0
                 except Exception:  # pylint: disable=broad-exception-caught
+                    # Any other error - default to 0
                     dependency_count = 0
+
+            # Detect cyclical dependencies for missing component
+            if has_circular and graph is not None:
+                try:
+                    import networkx as nx
+                    if comp_ref in graph:
+                        try:
+                            all_cycles = list(nx.simple_cycles(graph))
+                            component_cycles = [
+                                cycle for cycle in all_cycles if comp_ref in cycle
+                            ]
+                            if component_cycles:
+                                cycle_strings = []
+                                for cycle in component_cycles:
+                                    cycle_str = "->".join(cycle)
+                                    if len(cycle) > 1:
+                                        cycle_str += f"->{cycle[0]}"
+                                    cycle_strings.append(cycle_str)
+                                cyclical_dependencies = "; ".join(cycle_strings)
+                        except Exception:  # pylint: disable=broad-exception-caught
+                            cyclical_dependencies = "Cycle detected (unable to list components)"
+                except Exception:  # pylint: disable=broad-exception-caught
+                    pass
+
             return [
                 idx,
                 comp_ref,
@@ -627,6 +719,7 @@ class CSVFormatter(OutputFormatter):
                 "",
                 "",
                 0,  # External Dependency Count
+                cyclical_dependencies,
             ]
 
 

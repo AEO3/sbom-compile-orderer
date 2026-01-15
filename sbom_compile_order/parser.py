@@ -115,47 +115,7 @@ def parse_purl(purl: str) -> Tuple[Optional[str], Optional[str], Optional[str], 
             coords_part = maven_part
             rest = ""
 
-        # Split coordinates on / to get group and artifact
-        # Group may contain multiple segments separated by /
-        parts = coords_part.split("/")
-        if len(parts) < 2:
-            return None, None, None, None
-
-        # Last part is artifact, everything before is group
-        artifact = parts[-1]
-        
-        # Clean artifact name: remove version and file extension if present
-        # Artifact names should not include version (e.g., "config-1.4.0.jar" -> "config")
-        # Common patterns: artifact-version.ext or artifact-version
-        # Try to detect and remove version/extension suffix
-        artifact_clean = artifact
-        # Remove common file extensions (.jar, .pom, .war, .ear, etc.)
-        if "." in artifact_clean:
-            # Check if it looks like artifact-version.ext pattern
-            # Pattern: something like "config-1.4.0.jar" or "my-lib-2.0.1.pom"
-            # We want to extract just "config" or "my-lib"
-            # Version typically follows pattern: numbers, dots, dashes, letters (like "1.4.0", "2.0.1", "1.0-SNAPSHOT")
-            # Try to match pattern: artifact-name-version.ext
-            version_ext_pattern = r"^(.+?)-(\d+[.\w-]+)\.(jar|pom|war|ear|zip|tar\.gz)$"
-            match = re.match(version_ext_pattern, artifact_clean, re.IGNORECASE)
-            if match:
-                # Found pattern like "config-1.4.0.jar", extract just "config"
-                artifact_clean = match.group(1)
-            else:
-                # Try pattern without extension: artifact-version
-                version_pattern = r"^(.+?)-(\d+[.\w-]+)$"
-                match = re.match(version_pattern, artifact_clean)
-                if match:
-                    # Check if the version part looks like a real version (not part of artifact name)
-                    potential_version = match.group(2)
-                    # Versions typically start with a digit
-                    if potential_version and potential_version[0].isdigit():
-                        artifact_clean = match.group(1)
-        
-        artifact = artifact_clean
-        group = ".".join(parts[:-1])
-
-        # Extract version and type from rest
+        # Extract version and type from rest FIRST (before cleaning artifact)
         version = None
         file_type = None
 
@@ -171,6 +131,56 @@ def parse_purl(purl: str) -> Tuple[Optional[str], Optional[str], Optional[str], 
                     file_type = type_match.group(1)
             else:
                 version = rest if rest else None
+
+        # Split coordinates on / to get group and artifact
+        # Group may contain multiple segments separated by /
+        parts = coords_part.split("/")
+        if len(parts) < 2:
+            return None, None, None, None
+
+        # Last part is artifact, everything before is group
+        artifact = parts[-1]
+        group = ".".join(parts[:-1])
+        
+        # Clean artifact name: remove version and file extension if present
+        # Since we already have the version from the PURL, use it to strip it from artifact name
+        artifact_clean = artifact
+        
+        # If we have a version, try to remove it (and extension) from artifact name
+        if version:
+            # Escape version for regex (special chars like . need escaping)
+            version_escaped = re.escape(version)
+            
+            # Try patterns:
+            # 1. artifact-version.ext (e.g., "config-1.4.0.jar")
+            # 2. artifact-version (e.g., "config-1.4.0")
+            # Common extensions
+            extensions = r"(jar|pom|war|ear|zip|tar\.gz)"
+            
+            # Pattern 1: artifact-version.ext
+            pattern_with_ext = rf"^(.+?)-{version_escaped}\.{extensions}$"
+            match = re.match(pattern_with_ext, artifact_clean, re.IGNORECASE)
+            if match:
+                artifact_clean = match.group(1)
+            else:
+                # Pattern 2: artifact-version (no extension)
+                pattern_no_ext = rf"^(.+?)-{version_escaped}$"
+                match = re.match(pattern_no_ext, artifact_clean)
+                if match:
+                    artifact_clean = match.group(1)
+        
+        # Fallback: if no version or pattern didn't match, try generic version pattern
+        if artifact_clean == artifact and "." in artifact_clean:
+            # Try generic pattern: artifact-version.ext
+            version_ext_pattern = r"^(.+?)-(\d+[.\w-]+)\.(jar|pom|war|ear|zip|tar\.gz)$"
+            match = re.match(version_ext_pattern, artifact_clean, re.IGNORECASE)
+            if match:
+                potential_version = match.group(2)
+                # Only strip if it looks like a version (starts with digit)
+                if potential_version and potential_version[0].isdigit():
+                    artifact_clean = match.group(1)
+        
+        artifact = artifact_clean
 
         return group, artifact, version, file_type
     except Exception:  # pylint: disable=broad-exception-caught

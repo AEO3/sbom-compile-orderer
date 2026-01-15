@@ -13,7 +13,7 @@ from sbom_compile_order.dependency_resolver import DependencyResolver
 from sbom_compile_order.graph import DependencyGraph
 from sbom_compile_order.maven_central import MavenCentralClient
 from sbom_compile_order.output import get_formatter, write_dependencies_csv
-from sbom_compile_order.parser import Component, SBOMParser
+from sbom_compile_order.parser import Component, SBOMParser, extract_package_type
 from sbom_compile_order.pom_downloader import POMDownloader
 from sbom_compile_order.pom_dependency_extractor import POMDependencyExtractor
 
@@ -92,6 +92,22 @@ def main() -> None:
         nargs="+",
         default=[],
         help="Group IDs to ignore (e.g., --ignore-group-ids com.example org.test)",
+    )
+
+    parser.add_argument(
+        "--exclude-types",
+        type=str,
+        nargs="+",
+        default=[],
+        help="Component types to exclude (e.g., --exclude-types library application)",
+    )
+
+    parser.add_argument(
+        "--exclude-package-types",
+        type=str,
+        nargs="+",
+        default=[],
+        help="Package types to exclude (e.g., --exclude-package-types npm pypi)",
     )
 
     parser.add_argument(
@@ -263,6 +279,50 @@ def main() -> None:
             filtered_count = original_count - len(components)
             if filtered_count > 0:
                 log_msg = f"Filtered out {filtered_count} components with ignored group IDs: {', '.join(ignored_set)}"
+                _log_to_file(log_msg, log_file)
+                if args.verbose:
+                    print(log_msg, file=sys.stderr)
+
+        # Filter out excluded component types
+        if args.exclude_types:
+            excluded_types_set = set(args.exclude_types)
+            original_count = len(components)
+            components = {
+                comp_id: comp
+                for comp_id, comp in components.items()
+                if comp.type not in excluded_types_set
+            }
+            # Also filter dependencies
+            dependencies = {
+                dep_ref: dep_list
+                for dep_ref, dep_list in dependencies.items()
+                if dep_ref in components
+            }
+            filtered_count = original_count - len(components)
+            if filtered_count > 0:
+                log_msg = f"Filtered out {filtered_count} components with excluded types: {', '.join(excluded_types_set)}"
+                _log_to_file(log_msg, log_file)
+                if args.verbose:
+                    print(log_msg, file=sys.stderr)
+
+        # Filter out excluded package types
+        if args.exclude_package_types:
+            excluded_package_types_set = set(args.exclude_package_types)
+            original_count = len(components)
+            components = {
+                comp_id: comp
+                for comp_id, comp in components.items()
+                if not comp.purl or extract_package_type(comp.purl) not in excluded_package_types_set
+            }
+            # Also filter dependencies
+            dependencies = {
+                dep_ref: dep_list
+                for dep_ref, dep_list in dependencies.items()
+                if dep_ref in components
+            }
+            filtered_count = original_count - len(components)
+            if filtered_count > 0:
+                log_msg = f"Filtered out {filtered_count} components with excluded package types: {', '.join(excluded_package_types_set)}"
                 _log_to_file(log_msg, log_file)
                 if args.verbose:
                     print(log_msg, file=sys.stderr)

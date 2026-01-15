@@ -147,6 +147,37 @@ def parse_purl(purl: str) -> Tuple[Optional[str], Optional[str], Optional[str], 
         return None, None, None, None
 
 
+def extract_package_type(purl: str) -> Optional[str]:
+    """
+    Extract package type from a PURL (Package URL).
+
+    PURL format: pkg:{type}/{...}
+    Examples:
+        pkg:maven/... -> "maven"
+        pkg:npm/... -> "npm"
+        pkg:pypi/... -> "pypi"
+
+    Args:
+        purl: Package URL string
+
+    Returns:
+        Package type string (e.g., "maven", "npm", "pypi"), or None if PURL is invalid
+    """
+    if not purl or not purl.startswith("pkg:"):
+        return None
+
+    try:
+        # Remove "pkg:" prefix
+        rest = purl[4:]  # len("pkg:") = 4
+        # Extract type up to first "/"
+        if "/" in rest:
+            package_type = rest.split("/", 1)[0]
+            return package_type if package_type else None
+        return None
+    except Exception:  # pylint: disable=broad-exception-caught
+        return None
+
+
 def build_maven_central_url(
     group: str, artifact: str, version: str, file_type: str = "jar"
 ) -> str:

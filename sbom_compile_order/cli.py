@@ -306,6 +306,44 @@ def main() -> None:
             _log_to_file(log_msg, log_file)
             if args.verbose:
                 print(log_msg, file=sys.stderr)
+            
+            # Log all cycles with package details
+            try:
+                import networkx as nx
+                cycles = list(nx.simple_cycles(graph.graph))
+                if cycles:
+                    log_msg = f"[CYCLE DETECTION] Found {len(cycles)} cycle(s) in dependency graph"
+                    _log_to_file(log_msg, log_file)
+                    if args.verbose:
+                        print(log_msg, file=sys.stderr)
+                    
+                    for idx, cycle in enumerate(cycles, 1):
+                        cycle_str = "->".join(cycle)
+                        if len(cycle) > 1:
+                            cycle_str += f"->{cycle[0]}"
+                        
+                        # Get component names for better readability
+                        cycle_packages = []
+                        for comp_ref in cycle:
+                            comp = components.get(comp_ref)
+                            if comp:
+                                package_name = f"{comp.group}:{comp.name}" if comp.group else comp.name
+                                cycle_packages.append(f"{package_name} ({comp_ref})")
+                            else:
+                                cycle_packages.append(comp_ref)
+                        
+                        log_msg = (
+                            f"[CYCLE DETECTION] Cycle {idx}: {cycle_str} | "
+                            f"Packages: {', '.join(cycle_packages)}"
+                        )
+                        _log_to_file(log_msg, log_file)
+                        if args.verbose:
+                            print(log_msg, file=sys.stderr)
+            except Exception as cycle_exc:  # pylint: disable=broad-exception-caught
+                log_msg = f"[CYCLE DETECTION] Error detecting cycles: {cycle_exc}"
+                _log_to_file(log_msg, log_file)
+                if args.verbose:
+                    print(log_msg, file=sys.stderr)
 
         # Initialize POM downloader if requested
         pom_downloader = None

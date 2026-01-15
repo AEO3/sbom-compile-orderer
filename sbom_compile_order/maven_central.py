@@ -72,7 +72,7 @@ class MavenCentralClient:
             if use_gav_core:
                 url += "&core=gav"  # Use GAV core for version-specific searches
             request = Request(url)
-            request.add_header("User-Agent", "sbom-compile-order/1.4.0")
+            request.add_header("User-Agent", "sbom-compile-order/1.4.1")
 
             if self.verbose:
                 print(

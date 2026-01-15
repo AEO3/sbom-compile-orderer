@@ -414,11 +414,11 @@ class POMDownloader:
             self._log(f"[POM DOWNLOAD] Executing: urlopen(Request('{pom_url}'), timeout=30)")
 
             req = Request(pom_url)
-            req.add_header("User-Agent", "sbom-compile-order/1.4.0")
+            req.add_header("User-Agent", "sbom-compile-order/1.4.1")
             req.add_header("Accept", "application/xml, text/xml, */*")
             
             # Log request details
-            self._log(f"[POM DOWNLOAD] Request headers: User-Agent=sbom-compile-order/1.4.0, Accept=application/xml, text/xml, */*")
+            self._log(f"[POM DOWNLOAD] Request headers: User-Agent=sbom-compile-order/1.4.1, Accept=application/xml, text/xml, */*")
             
             # Create SSL context that accepts default certificates
             ssl_context = ssl.create_default_context()
@@ -579,7 +579,7 @@ class POMDownloader:
         self._log(f"[URL USING TO DOWNLOAD] {pom_url}")
         try:
             req = Request(pom_url)
-            req.add_header("User-Agent", "sbom-compile-order/1.4.0")
+            req.add_header("User-Agent", "sbom-compile-order/1.4.1")
             with urlopen(req, timeout=10) as response:
                 if response.status == 200:
                     return response.read(), False

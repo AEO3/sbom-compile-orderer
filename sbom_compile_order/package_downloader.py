@@ -105,7 +105,7 @@ class PackageDownloader:
 
         try:
             req = Request(jar_url)
-            req.add_header("User-Agent", "sbom-compile-order/1.4.0")
+            req.add_header("User-Agent", "sbom-compile-order/1.4.1")
             with urlopen(req, timeout=30) as response:
                 if response.status == 200:
                     jar_content = response.read()

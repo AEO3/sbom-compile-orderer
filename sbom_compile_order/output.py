@@ -575,14 +575,9 @@ class CSVFormatter(OutputFormatter):
                         # Get all simple cycles that include this component
                         try:
                             all_cycles = list(nx.simple_cycles(graph))
-                            log_msg = f"[CYCLE DETECTION] Checking component {comp_ref}: found {len(all_cycles)} total cycles"
-                            print(log_msg, file=sys.stderr)
-                            
                             component_cycles = [
                                 cycle for cycle in all_cycles if comp_ref in cycle
                             ]
-                            log_msg = f"[CYCLE DETECTION] Component {comp_ref} is in {len(component_cycles)} cycle(s)"
-                            print(log_msg, file=sys.stderr)
                             
                             if component_cycles:
                                 # Format cycles as: "comp1->comp2->comp3->comp1; comp4->comp5->comp4"
@@ -595,39 +590,13 @@ class CSVFormatter(OutputFormatter):
                                     cycle_strings.append(cycle_str)
                                 
                                 cyclical_dependencies = "; ".join(cycle_strings)
-                                
-                                # Log cycle detection for this component with package names
-                                package_name = f"{comp.group}:{comp.name}" if comp.group else comp.name
-                                cycle_packages = []
-                                for cycle in component_cycles:
-                                    for cycle_comp_ref in cycle:
-                                        cycle_comp = components.get(cycle_comp_ref)
-                                        if cycle_comp:
-                                            cycle_pkg = f"{cycle_comp.group}:{cycle_comp.name}" if cycle_comp.group else cycle_comp.name
-                                            cycle_packages.append(f"{cycle_pkg} ({cycle_comp_ref})")
-                                        else:
-                                            cycle_packages.append(f"UNKNOWN ({cycle_comp_ref})")
-                                
-                                # Log to stderr so it appears in console/logs
-                                import sys
-                                log_msg = (
-                                    f"[CYCLE DETECTION] Package {package_name} ({comp_ref}) "
-                                    f"is part of cycle(s): {cyclical_dependencies}"
-                                )
-                                print(log_msg, file=sys.stderr)
-                                log_msg = (
-                                    f"[CYCLE DETECTION] Packages involved in cycle(s) for {package_name}: "
-                                    f"{', '.join(set(cycle_packages))}"
-                                )
-                                print(log_msg, file=sys.stderr)
+                                # Note: Cycle detection logging removed from stdout/stderr
+                                # All cycle information is logged in cli.py when cycles are detected
                         except Exception as cycle_exc:  # pylint: disable=broad-exception-caught
                             # If cycle detection fails, mark as having cycles but can't list them
                             cyclical_dependencies = "Cycle detected (unable to list components)"
-                            import sys
-                            log_msg = (
-                                f"[CYCLE DETECTION] Error detecting cycles for {comp_ref}: {cycle_exc}"
-                            )
-                            print(log_msg, file=sys.stderr)
+                            # Note: Error logging removed from stdout/stderr
+                            # Errors are logged in cli.py when cycles are detected
                 except Exception:  # pylint: disable=broad-exception-caught
                     pass
             

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from sbom_compile_order.dependency_resolver import DependencyResolver
 from sbom_compile_order.graph import DependencyGraph
+from sbom_compile_order.hash_cache import HashCache
 from sbom_compile_order.maven_central import MavenCentralClient
 from sbom_compile_order.output import get_formatter, write_dependencies_csv
 from sbom_compile_order.parser import Component, SBOMParser, extract_package_type
@@ -240,12 +241,24 @@ def main() -> None:
         print(f"Log file: {log_file}", file=sys.stderr)
 
     try:
+        # Initialize hash cache for intelligent caching
+        hash_cache = HashCache(cache_dir)
+        
         # Parse SBOM
         sbom_path = Path(args.sbom_file)
         log_msg = f"Parsing SBOM file: {sbom_path}"
         _log_to_file(log_msg, log_file)
         if args.verbose:
             print(log_msg, file=sys.stderr)
+
+        # Calculate and save SBOM hash
+        sbom_hash = hash_cache.get_sbom_hash(sbom_path)
+        if sbom_hash:
+            hash_cache.save_sbom_hash(sbom_hash)
+            log_msg = f"SBOM hash: {sbom_hash}"
+            _log_to_file(log_msg, log_file)
+            if args.verbose:
+                print(log_msg, file=sys.stderr)
 
         sbom_parser = SBOMParser(sbom_path)
         sbom_parser.parse()
@@ -452,18 +465,18 @@ def main() -> None:
             if args.verbose:
                 print(log_msg, file=sys.stderr)
 
-        # STUBBED OUT: Package downloader functionality disabled
+        # Initialize package (JAR) downloader if requested
         package_downloader = None
-        # if args.pull_package:
-        #     from sbom_compile_order.package_downloader import PackageDownloader
-        #
-        #     package_downloader = PackageDownloader(
-        #         cache_dir, verbose=args.verbose
-        #     )
-        #     log_msg = f"Package downloader initialized: {cache_dir}"
-        #     _log_to_file(log_msg, log_file)
-        #     if args.verbose:
-        #         print(log_msg, file=sys.stderr)
+        if args.pull_package:
+            from sbom_compile_order.package_downloader import PackageDownloader
+
+            package_downloader = PackageDownloader(
+                cache_dir, verbose=args.verbose
+            )
+            log_msg = f"Package downloader initialized: {cache_dir}"
+            _log_to_file(log_msg, log_file)
+            if args.verbose:
+                print(log_msg, file=sys.stderr)
 
         # Initialize Maven Central client if requested
         maven_central_client = None
@@ -569,30 +582,73 @@ def main() -> None:
                     if args.verbose:
                         print(log_msg, file=sys.stderr)
             
+            # Check if compile-order.csv needs to be regenerated
+            compile_order_needs_regen = True
+            if output_path.exists():
+                cached_sbom_hash = hash_cache.get_cached_sbom_hash()
+                if sbom_hash and cached_sbom_hash and sbom_hash == cached_sbom_hash:
+                    # SBOM unchanged, check if compile-order.csv hash matches
+                    compile_order_hash = hash_cache.get_compile_order_hash(output_path)
+                    cached_compile_order_hash = hash_cache.get_cached_compile_order_hash()
+                    if compile_order_hash and cached_compile_order_hash and compile_order_hash == cached_compile_order_hash:
+                        log_msg = (
+                            f"SBOM and compile-order.csv unchanged (hash match), "
+                            f"skipping compile-order.csv regeneration"
+                        )
+                        _log_to_file(log_msg, log_file)
+                        if args.verbose:
+                            print(log_msg, file=sys.stderr)
+                        compile_order_needs_regen = False
+                    else:
+                        log_msg = (
+                            f"SBOM unchanged but compile-order.csv changed, "
+                            f"regenerating compile-order.csv"
+                        )
+                        _log_to_file(log_msg, log_file)
+                        if args.verbose:
+                            print(log_msg, file=sys.stderr)
+                else:
+                    log_msg = "SBOM changed, regenerating compile-order.csv"
+                    _log_to_file(log_msg, log_file)
+                    if args.verbose:
+                        print(log_msg, file=sys.stderr)
+
             # Create compile-order.csv WITHOUT Maven Central lookups or POM downloads
             # This file is written once and never modified again
             # Pass None for pom_downloader, maven_central_client and dependency_resolver to skip lookups
-            log_msg = "Creating compile-order.csv (base file, no Maven Central lookups, no POM downloads)"
-            _log_to_file(log_msg, log_file)
-            if args.verbose:
-                print(log_msg, file=sys.stderr)
-            
-            formatter.format_incremental(
-                output_path,
-                order,
-                components,
-                has_circular,
-                statistics,
-                args.include_metadata,
-                graph.graph,
-                None,  # No POM downloads for compile-order.csv - all enhanced data goes to enhanced.csv
-                None,  # No Maven Central lookups for compile-order.csv
-                None,  # No dependency resolver for compile-order.csv
-            )
-            log_msg = f"compile-order.csv written successfully: {output_path} ({len(order)} rows) - file is now static"
-            _log_to_file(log_msg, log_file)
-            if args.verbose:
-                print(log_msg, file=sys.stderr)
+            if compile_order_needs_regen:
+                log_msg = "Creating compile-order.csv (base file, no Maven Central lookups, no POM downloads)"
+                _log_to_file(log_msg, log_file)
+                if args.verbose:
+                    print(log_msg, file=sys.stderr)
+                
+                formatter.format_incremental(
+                    output_path,
+                    order,
+                    components,
+                    has_circular,
+                    statistics,
+                    args.include_metadata,
+                    graph.graph,
+                    None,  # No POM downloads for compile-order.csv - all enhanced data goes to enhanced.csv
+                    None,  # No Maven Central lookups for compile-order.csv
+                    None,  # No dependency resolver for compile-order.csv
+                )
+                
+                # Save compile-order.csv hash
+                compile_order_hash = hash_cache.get_compile_order_hash(output_path)
+                if compile_order_hash:
+                    hash_cache.save_compile_order_hash(compile_order_hash)
+                
+                log_msg = f"compile-order.csv written successfully: {output_path} ({len(order)} rows) - file is now static"
+                _log_to_file(log_msg, log_file)
+                if args.verbose:
+                    print(log_msg, file=sys.stderr)
+            else:
+                log_msg = f"Using existing compile-order.csv: {output_path}"
+                _log_to_file(log_msg, log_file)
+                if args.verbose:
+                    print(log_msg, file=sys.stderr)
 
             # Create enhanced CSV if Maven Central lookup is requested
             # This reads from compile-order.csv and writes incrementally to enhanced.csv
@@ -604,14 +660,72 @@ def main() -> None:
                 compile_order_path = output_path
                 enhanced_csv_path = cache_dir / "enhanced.csv"
 
+                # Check if enhanced.csv needs regeneration
+                enhanced_needs_regen = True
+                if enhanced_csv_path.exists() and compile_order_path.exists():
+                    # Check if compile-order.csv hash matches cached hash
+                    compile_order_hash = hash_cache.get_compile_order_hash(compile_order_path)
+                    cached_compile_order_hash = hash_cache.get_cached_compile_order_hash()
+                    if compile_order_hash and cached_compile_order_hash and compile_order_hash == cached_compile_order_hash:
+                        # compile-order.csv unchanged, check if enhanced.csv needs incremental update
+                        # Enhanced CSV should be updated incrementally (e.g., POM/JAR download status)
+                        log_msg = (
+                            f"compile-order.csv unchanged, enhanced.csv will be updated incrementally "
+                            f"if needed (e.g., POM/JAR download status)"
+                        )
+                        _log_to_file(log_msg, log_file)
+                        if args.verbose:
+                            print(log_msg, file=sys.stderr)
+                        # Still need to process for incremental updates
+                    else:
+                        log_msg = "compile-order.csv changed, regenerating enhanced.csv"
+                        _log_to_file(log_msg, log_file)
+                        if args.verbose:
+                            print(log_msg, file=sys.stderr)
+
                 log_msg = (
-                    f"Creating enhanced CSV from compile-order.csv: {compile_order_path}"
+                    f"Creating/updating enhanced CSV from compile-order.csv: {compile_order_path}"
                 )
                 _log_to_file(log_msg, log_file)
                 if args.verbose:
                     print(log_msg, file=sys.stderr)
                 
+                # Start parallel background downloads if requested
+                parallel_download_thread = None
+                if args.poms or args.pull_package:
+                    from sbom_compile_order.parallel_downloader import ParallelDownloader
+                    
+                    parallel_downloader = ParallelDownloader(
+                        compile_order_csv_path=compile_order_path,
+                        pom_downloader=pom_downloader if args.poms else None,
+                        jar_downloader=package_downloader if args.pull_package else None,
+                        max_workers=5,  # Configurable parallel downloads
+                        verbose=args.verbose,
+                        log_file=log_file,
+                    )
+                    
+                    download_types = []
+                    if args.poms:
+                        download_types.append("POMs")
+                    if args.pull_package:
+                        download_types.append("JARs")
+                    download_types_str = " and ".join(download_types)
+                    
+                    log_msg = (
+                        f"Starting parallel background downloads ({download_types_str}) "
+                        f"while enhanced.csv is being created"
+                    )
+                    _log_to_file(log_msg, log_file)
+                    if args.verbose:
+                        print(log_msg, file=sys.stderr)
+                    
+                    # Start background download thread
+                    parallel_download_thread = parallel_downloader.start_background_downloads()
+                
                 # Pass pom_downloader to enhanced CSV so POM downloads happen there, not in compile-order.csv
+                # Also pass hash_cache for incremental updates
+                # Note: Enhanced CSV will still do downloads sequentially, but parallel downloads
+                # run in background and will be available when enhanced CSV checks for them
                 create_enhanced_csv(
                     compile_order_path,
                     enhanced_csv_path,
@@ -619,7 +733,33 @@ def main() -> None:
                     pom_downloader=pom_downloader,  # POM downloads happen in enhanced.csv
                     verbose=args.verbose,
                     log_file=log_file,
+                    hash_cache=hash_cache,  # Pass hash cache for incremental updates
                 )
+                
+                # Wait for parallel downloads to complete
+                if parallel_download_thread:
+                    log_msg = "Waiting for parallel background downloads to complete..."
+                    _log_to_file(log_msg, log_file)
+                    if args.verbose:
+                        print(log_msg, file=sys.stderr)
+                    
+                    parallel_download_thread.join(timeout=300)  # Wait up to 5 minutes
+                    
+                    if parallel_download_thread.is_alive():
+                        log_msg = "[PARALLEL DOWNLOAD] Background downloads still running (will continue in background)"
+                        _log_to_file(log_msg, log_file)
+                        if args.verbose:
+                            print(log_msg, file=sys.stderr)
+                    else:
+                        log_msg = "[PARALLEL DOWNLOAD] Background downloads completed"
+                        _log_to_file(log_msg, log_file)
+                        if args.verbose:
+                            print(log_msg, file=sys.stderr)
+                
+                # Save enhanced.csv hash after creation/update
+                enhanced_hash = hash_cache.get_enhanced_hash(enhanced_csv_path)
+                if enhanced_hash:
+                    hash_cache.save_enhanced_hash(enhanced_hash)
 
                 log_msg = f"Enhanced CSV created: {enhanced_csv_path}"
                 _log_to_file(log_msg, log_file)

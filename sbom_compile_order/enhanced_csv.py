@@ -82,9 +82,13 @@ def create_enhanced_csv(
     pom_downloader=None,
     verbose: bool = False,
     log_file: Optional[Path] = None,
+    hash_cache=None,
 ) -> None:
     """
     Read compile-order.csv and create enhanced.csv with Maven Central data and POM downloads.
+
+    Supports incremental updates: if compile-order.csv is unchanged and enhanced.csv exists,
+    only updates rows where POM/JAR download status might have changed.
 
     Args:
         compile_order_csv_path: Path to the compile-order.csv file
@@ -93,6 +97,7 @@ def create_enhanced_csv(
         pom_downloader: Optional POMDownloader instance for downloading POM files
         verbose: Whether to print verbose output
         log_file: Optional path to log file for logging actions
+        hash_cache: Optional HashCache instance for checking if incremental update is needed
     """
     if log_file is None:
         # Default to cache directory log file
@@ -108,12 +113,48 @@ def create_enhanced_csv(
             print(error_msg, file=sys.stderr)
         return
 
+    # Check if incremental update is possible
+    incremental_update = False
+    existing_enhanced_rows = {}
+    if hash_cache and enhanced_csv_path.exists():
+        compile_order_hash = hash_cache.get_compile_order_hash(compile_order_csv_path)
+        cached_compile_order_hash = hash_cache.get_cached_compile_order_hash()
+        if compile_order_hash and cached_compile_order_hash and compile_order_hash == cached_compile_order_hash:
+            # compile-order.csv unchanged, check if we can do incremental update
+            try:
+                # Read existing enhanced.csv to preserve data
+                with open(enhanced_csv_path, "r", encoding="utf-8") as f:
+                    reader = csv.reader(f)
+                    existing_header = next(reader)
+                    for existing_row in reader:
+                        if len(existing_row) > 1:
+                            # Use Group ID + Package Name + Version as key
+                            key = f"{existing_row[1]}:{existing_row[2]}:{existing_row[3]}"
+                            existing_enhanced_rows[key] = existing_row
+                incremental_update = True
+                log_msg = (
+                    f"compile-order.csv unchanged, performing incremental update of enhanced.csv "
+                    f"({len(existing_enhanced_rows)} existing rows)"
+                )
+                _log_to_file(log_msg, log_file)
+                if verbose:
+                    print(f"[INFO] {log_msg}", file=sys.stderr)
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                log_msg = f"Failed to read existing enhanced.csv for incremental update: {exc}, will regenerate"
+                _log_to_file(log_msg, log_file)
+                if verbose:
+                    print(f"[INFO] {log_msg}", file=sys.stderr)
+                incremental_update = False
+
     log_msg = f"Reading compile-order.csv: {compile_order_csv_path}"
     _log_to_file(log_msg, log_file)
     if verbose:
         print(f"[INFO] {log_msg}", file=sys.stderr)
     
-    log_msg = f"Creating enhanced CSV: {enhanced_csv_path}"
+    if incremental_update:
+        log_msg = f"Updating enhanced CSV incrementally: {enhanced_csv_path}"
+    else:
+        log_msg = f"Creating enhanced CSV: {enhanced_csv_path}"
     _log_to_file(log_msg, log_file)
     if verbose:
         print(f"[INFO] {log_msg}", file=sys.stderr)
@@ -132,7 +173,12 @@ def create_enhanced_csv(
 
     # Write enhanced CSV incrementally (row by row) so it can be tailed
     # Open file and keep it open for incremental writing
-    enhanced_file = open(enhanced_csv_path, "w", encoding="utf-8", newline="")
+    if incremental_update:
+        # Append mode for incremental updates (but we'll rewrite the file)
+        # Actually, we need to rewrite to maintain order, so use write mode
+        enhanced_file = open(enhanced_csv_path, "w", encoding="utf-8", newline="")
+    else:
+        enhanced_file = open(enhanced_csv_path, "w", encoding="utf-8", newline="")
     writer = csv.writer(enhanced_file)
     
     # Write header - add new columns "Downloaded", "File Location", "POM URL", and "JAR URL" to the end
@@ -164,6 +210,19 @@ def create_enhanced_csv(
         package_name = row[2]
         version = row[3]
 
+        # Create key for incremental update lookup
+        row_key = f"{group_id_col}:{package_name}:{version}"
+
+        # Check if we can use existing enhanced data (incremental update)
+        use_existing_data = False
+        existing_row_data = None
+        if incremental_update and row_key in existing_enhanced_rows:
+            existing_row_data = existing_enhanced_rows[row_key]
+            # In incremental mode, we preserve existing data but always check POM/JAR downloads
+            # if pom_downloader is available (to update download status)
+            # For other fields (homepage, license), use existing if available
+            use_existing_data = True  # Use existing data for non-download fields
+
         # Parse Group ID column - it may be "group:artifact" or just "group"
         group = ""
         artifact = package_name  # Default to package_name if not in group_id
@@ -187,10 +246,20 @@ def create_enhanced_csv(
         }
         comp = Component(component_data)
 
-        # Lookup Maven Central data
+        # Lookup Maven Central data (skip if using existing data to avoid unnecessary API calls)
         homepage_url = ""
         license_type = ""
-        if maven_central_client and comp.group and comp.name:
+        if use_existing_data and existing_row_data and len(existing_row_data) > 13:
+            # Use existing homepage and license (skip API call in incremental mode)
+            homepage_url = existing_row_data[13] if len(existing_row_data) > 13 else ""
+            license_type = existing_row_data[14] if len(existing_row_data) > 14 else ""
+            if verbose and (homepage_url or license_type):
+                log_msg = (
+                    f"Using existing Maven Central data for {group}:{artifact}:{version} "
+                    f"(incremental update mode)"
+                )
+                _log_to_file(log_msg, log_file)
+        elif maven_central_client and comp.group and comp.name:
             try:
                 homepage, license = maven_central_client.get_package_info(comp)
                 if homepage:
@@ -220,12 +289,16 @@ def create_enhanced_csv(
             jar_url_maven = build_maven_central_url(comp.group, comp.name, comp.version, "jar")
         
         # Download POM file if pom_downloader is provided
+        # In incremental mode, always check POM download status to update if needed
         pom_filename = ""
         auth_required = ""
         downloaded_status = ""
         file_location = ""
         repo_url_from_pom = ""  # Will be extracted from POM file
         repo_url = row[9] if len(row) > 9 else ""  # Repo URL is in column 9 (original from SBOM)
+        
+        # Always check POM download status if pom_downloader is available
+        # This ensures download status is up-to-date even in incremental mode
         if pom_downloader and comp.group and comp.name and comp.version:
             try:
                 pom_result, auth_req = pom_downloader.download_pom(comp, repo_url or "")
@@ -331,23 +404,50 @@ def create_enhanced_csv(
         # 11=POM, 12=AUTH, 13=Homepage URL, 14=License Type, 15=External Dependency Count
         
         # Update Repo URL (column 9) with URL from POM file if available
+        # In incremental mode, preserve existing if no new URL found
         if repo_url_from_pom:
             row[9] = repo_url_from_pom
+        elif use_existing_data and existing_row_data and len(existing_row_data) > 9:
+            row[9] = existing_row_data[9]  # Preserve existing Repo URL
         
+        # Update POM and AUTH columns
+        # Always update if we have new data, otherwise preserve existing in incremental mode
         if pom_filename:
             row[11] = pom_filename
+        elif use_existing_data and existing_row_data and len(existing_row_data) > 11:
+            row[11] = existing_row_data[11]  # Preserve existing POM filename
+            
         if auth_required:
             row[12] = auth_required
+        elif use_existing_data and existing_row_data and len(existing_row_data) > 12:
+            row[12] = existing_row_data[12]  # Preserve existing AUTH status
+        
+        # Update Homepage URL and License Type (preserve existing if no new data)
         if homepage_url:
             row[13] = homepage_url
+        elif use_existing_data and existing_row_data and len(existing_row_data) > 13:
+            row[13] = existing_row_data[13]  # Preserve existing Homepage URL
+            
         if license_type:
             row[14] = license_type
+        elif use_existing_data and existing_row_data and len(existing_row_data) > 14:
+            row[14] = existing_row_data[14]  # Preserve existing License Type
         
         # Add new columns: Downloaded (16), File Location (17), POM URL (18), and JAR URL (19)
-        row.append(downloaded_status)
-        row.append(file_location)
-        row.append(pom_url_maven)
-        row.append(jar_url_maven)
+        # In incremental mode with existing data, preserve existing values if we didn't check downloads
+        # Otherwise use new values (either from download check or empty if no downloader)
+        if use_existing_data and existing_row_data and len(existing_row_data) > 19 and not pom_downloader:
+            # Incremental mode, no downloader - preserve all existing data
+            row.append(existing_row_data[16] if len(existing_row_data) > 16 else downloaded_status)
+            row.append(existing_row_data[17] if len(existing_row_data) > 17 else file_location)
+            row.append(existing_row_data[18] if len(existing_row_data) > 18 else pom_url_maven)
+            row.append(existing_row_data[19] if len(existing_row_data) > 19 else jar_url_maven)
+        else:
+            # Use new values (either from download check or defaults)
+            row.append(downloaded_status)
+            row.append(file_location)
+            row.append(pom_url_maven)
+            row.append(jar_url_maven)
 
         # Write row immediately and flush to disk for tailing
         writer.writerow(row)

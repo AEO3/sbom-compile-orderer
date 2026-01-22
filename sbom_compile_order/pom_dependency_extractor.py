@@ -7,8 +7,12 @@ compile-order list.
 """
 
 import csv
+import json
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -82,17 +86,20 @@ class POMDependency:
 class POMDependencyExtractor:
     """Extracts dependencies from POM files."""
 
-    def __init__(self, cache_dir: Path, verbose: bool = False) -> None:
+    def __init__(self, cache_dir: Path, verbose: bool = False, use_maven: bool = True) -> None:
         """
         Initialize the POM dependency extractor.
 
         Args:
             cache_dir: Directory containing cached POM files
             verbose: Enable verbose output
+            use_maven: If True, use Maven commands when available (dependency:tree, help:effective-pom)
         """
         self.cache_dir = Path(cache_dir)
         self.pom_cache_dir = self.cache_dir / "poms"
         self.verbose = verbose
+        self.use_maven = use_maven
+        self._maven_available = None  # Cache Maven availability check
 
     def _log(self, message: str) -> None:
         """
@@ -104,9 +111,255 @@ class POMDependencyExtractor:
         if self.verbose:
             print(message, file=sys.stderr)
 
+    def _is_maven_available(self) -> bool:
+        """
+        Check if Maven is available on the system.
+
+        Returns:
+            True if Maven is available, False otherwise
+        """
+        if self._maven_available is not None:
+            return self._maven_available
+
+        try:
+            result = subprocess.run(
+                ["mvn", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self._maven_available = result.returncode == 0
+            return self._maven_available
+        except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+            self._maven_available = False
+            return False
+
+    def _get_dependencies_with_maven(
+        self, group_id: str, artifact_id: str, version: str, pom_path: Optional[Path] = None
+    ) -> List[POMDependency]:
+        """
+        Get dependencies using Maven's dependency:tree command.
+
+        This provides complete dependency resolution including transitive dependencies
+        with resolved versions (properties resolved).
+
+        Args:
+            group_id: Maven group ID
+            artifact_id: Maven artifact ID
+            version: Maven version
+            pom_path: Optional path to POM file (if None, uses Maven coordinates)
+
+        Returns:
+            List of POMDependency objects with resolved versions
+        """
+        if not self._is_maven_available():
+            return []
+
+        dependencies = []
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_path = Path(temp_dir)
+
+                # Create a temporary POM file if not provided
+                if pom_path and pom_path.exists():
+                    # Use existing POM file
+                    work_pom = pom_path
+                else:
+                    # Create minimal POM for Maven to work with
+                    work_pom = temp_path / "pom.xml"
+                    minimal_pom = f"""<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>{group_id}</groupId>
+    <artifactId>{artifact_id}</artifactId>
+    <version>{version}</version>
+</project>"""
+                    work_pom.write_text(minimal_pom, encoding="utf-8")
+
+                # Use Maven dependency:tree with JSON output
+                output_file = temp_path / "dependency-tree.json"
+                cmd = [
+                    "mvn",
+                    "dependency:tree",
+                    f"-DoutputType=json",
+                    f"-DoutputFile={output_file}",
+                    "-Dtransitive=true",  # Include transitive dependencies
+                    "-Dscope=compile",  # Only compile scope (exclude test)
+                ]
+
+                if not self.verbose:
+                    cmd.append("-q")  # Quiet mode
+
+                self._log(
+                    f"[MAVEN] Getting dependencies for {group_id}:{artifact_id}:{version} "
+                    f"using dependency:tree"
+                )
+
+                # Change to directory containing POM or temp directory
+                work_dir = work_pom.parent
+                result = subprocess.run(
+                    cmd,
+                    cwd=str(work_dir),
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+
+                if result.returncode == 0 and output_file.exists():
+                    # Parse JSON output
+                    with open(output_file, "r", encoding="utf-8") as f:
+                        tree_data = json.load(f)
+
+                    # Extract dependencies from tree structure
+                    # Maven JSON format uses "children" array, not "dependencies"
+                    def extract_deps(node: Dict, parent_scope: str = "compile") -> None:
+                        """Recursively extract dependencies from tree node."""
+                        # Handle both "children" (Maven 3.7+) and "dependencies" (older formats)
+                        children = node.get("children", node.get("dependencies", []))
+                        
+                        for dep in children:
+                            # Extract dependency information
+                            dep_group = dep.get("groupId", "")
+                            dep_artifact = dep.get("artifactId", "")
+                            dep_version = dep.get("version", "")
+                            # Scope can be empty string for root, use parent scope as fallback
+                            dep_scope = dep.get("scope", "") or parent_scope or "compile"
+                            # Optional can be string "true"/"false" or boolean
+                            dep_optional_str = dep.get("optional", "false")
+                            dep_optional = (
+                                dep_optional_str.lower() == "true" if isinstance(dep_optional_str, str)
+                                else bool(dep_optional_str)
+                            )
+
+                            # Skip optional and test scope dependencies
+                            if dep_optional or dep_scope == "test":
+                                # Still process transitive deps even if skipping this one
+                                child_nodes = dep.get("children", dep.get("dependencies", []))
+                                if child_nodes:
+                                    extract_deps(dep, dep_scope)
+                                continue
+
+                            # Create dependency object
+                            pom_dep = POMDependency(
+                                group_id=dep_group,
+                                artifact_id=dep_artifact,
+                                version=dep_version,
+                                scope=dep_scope,
+                                optional=dep_optional,
+                            )
+
+                            # Add if not already present (avoid duplicates)
+                            dep_id = pom_dep.get_identifier()
+                            if not any(d.get_identifier() == dep_id for d in dependencies):
+                                dependencies.append(pom_dep)
+
+                            # Recursively process transitive dependencies
+                            child_nodes = dep.get("children", dep.get("dependencies", []))
+                            if child_nodes:
+                                extract_deps(dep, dep_scope)
+
+                    # Start extraction from root (skip root node itself, process its children)
+                    extract_deps(tree_data)
+
+                    self._log(
+                        f"[MAVEN] Found {len(dependencies)} dependencies for "
+                        f"{group_id}:{artifact_id}:{version}"
+                    )
+                else:
+                    if self.verbose:
+                        self._log(
+                            f"[MAVEN] dependency:tree failed: {result.stderr}"
+                        )
+                    return []
+
+        except subprocess.TimeoutExpired:
+            self._log(f"[MAVEN] dependency:tree timed out for {group_id}:{artifact_id}:{version}")
+            return []
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            self._log(f"[MAVEN] Error getting dependencies: {exc}")
+            return []
+
+        return dependencies
+
+    def _get_effective_pom_with_maven(
+        self, group_id: str, artifact_id: str, version: str
+    ) -> Optional[Path]:
+        """
+        Get effective POM using Maven's help:effective-pom command.
+
+        The effective POM has all parent POMs merged and properties resolved.
+
+        Args:
+            group_id: Maven group ID
+            artifact_id: Maven artifact ID
+            version: Maven version
+
+        Returns:
+            Path to effective POM file, or None if failed
+        """
+        if not self._is_maven_available():
+            return None
+
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_path = Path(temp_dir)
+                effective_pom = temp_path / "effective-pom.xml"
+
+                # Use Maven help:effective-pom with artifact coordinates
+                cmd = [
+                    "mvn",
+                    "help:effective-pom",
+                    f"-Dartifact={group_id}:{artifact_id}:{version}",
+                    f"-Doutput={effective_pom}",
+                ]
+
+                if not self.verbose:
+                    cmd.append("-q")  # Quiet mode
+
+                self._log(
+                    f"[MAVEN] Getting effective POM for {group_id}:{artifact_id}:{version}"
+                )
+
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+
+                if result.returncode == 0 and effective_pom.exists():
+                    # Copy to cache directory for reuse
+                    cache_key = f"{group_id}_{artifact_id}_{version}".replace(":", "_").replace("/", "_")
+                    cached_effective = self.pom_cache_dir / f"{cache_key}-effective.pom"
+                    cached_effective.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(effective_pom, cached_effective)
+                    self._log(
+                        f"[MAVEN] Effective POM saved to {cached_effective}"
+                    )
+                    return cached_effective
+                else:
+                    if self.verbose:
+                        self._log(
+                            f"[MAVEN] help:effective-pom failed: {result.stderr}"
+                        )
+                    return None
+
+        except subprocess.TimeoutExpired:
+            self._log(f"[MAVEN] help:effective-pom timed out for {group_id}:{artifact_id}:{version}")
+            return None
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            self._log(f"[MAVEN] Error getting effective POM: {exc}")
+            return None
+
     def _parse_pom_file(self, pom_path: Path) -> List[POMDependency]:
         """
         Parse a POM file and extract dependencies.
+
+        Uses Maven dependency:tree if available for better resolution,
+        otherwise falls back to manual POM parsing.
 
         Args:
             pom_path: Path to the POM file
@@ -114,6 +367,45 @@ class POMDependencyExtractor:
         Returns:
             List of POMDependency objects
         """
+        # Try Maven first if enabled and available
+        if self.use_maven and self._is_maven_available():
+            try:
+                # Extract groupId, artifactId, version from POM
+                tree = ET.parse(pom_path)
+                root = tree.getroot()
+                namespaces = {"maven": "http://maven.apache.org/POM/4.0.0"}
+                if root.tag.startswith("{"):
+                    namespace_match = re.match(r"\{([^}]+)\}", root.tag)
+                    if namespace_match:
+                        namespaces["maven"] = namespace_match.group(1)
+
+                # Get groupId
+                group_elem = root.find("maven:groupId", namespaces) or root.find("groupId")
+                artifact_elem = root.find("maven:artifactId", namespaces) or root.find("artifactId")
+                version_elem = root.find("maven:version", namespaces) or root.find("version")
+
+                if group_elem is not None and artifact_elem is not None and version_elem is not None:
+                    group_id = group_elem.text.strip() if group_elem.text else ""
+                    artifact_id = artifact_elem.text.strip() if artifact_elem.text else ""
+                    version = version_elem.text.strip() if version_elem.text else ""
+
+                    if group_id and artifact_id and version:
+                        # Use Maven to get dependencies with resolved versions
+                        maven_deps = self._get_dependencies_with_maven(
+                            group_id, artifact_id, version, pom_path
+                        )
+                        if maven_deps:
+                            self._log(
+                                f"[MAVEN] Using Maven dependency:tree for {group_id}:{artifact_id}:{version} "
+                                f"({len(maven_deps)} dependencies)"
+                            )
+                            return maven_deps
+                        # Fall through to manual parsing if Maven fails
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                self._log(f"[MAVEN] Maven dependency extraction failed, using manual parsing: {exc}")
+                # Fall through to manual parsing
+
+        # Manual POM parsing (fallback or when Maven not available)
         dependencies = []
         try:
             tree = ET.parse(pom_path)

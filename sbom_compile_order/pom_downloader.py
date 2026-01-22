@@ -30,6 +30,7 @@ class POMDownloader:
         verbose: bool = False,
         clone_repos: bool = False,
         download_from_maven_central: bool = False,
+        use_maven: Optional[bool] = None,
     ) -> None:
         """
         Initialize the POM downloader.
@@ -39,18 +40,47 @@ class POMDownloader:
             verbose: Enable verbose output
             clone_repos: If True, clone repositories to find POM files
             download_from_maven_central: If True, download POMs from Maven Central
+            use_maven: If True, use Maven dependency:get plugin to download POMs (more reliable).
+                      If None (default), auto-detect and use Maven when available.
         """
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.verbose = verbose
         self.clone_repos = clone_repos
         self.download_from_maven_central = download_from_maven_central
+        
+        # Auto-detect Maven if not explicitly set
+        if use_maven is None:
+            self.use_maven = self._check_maven_available()
+            if self.use_maven:
+                self._log("[MAVEN] Maven detected, will use Maven for POM downloads when available")
+        else:
+            self.use_maven = use_maven
+        
         self.repo_cache_dir = self.cache_dir / "repos"
         if self.clone_repos:
             self.repo_cache_dir.mkdir(parents=True, exist_ok=True)
         self.pom_cache_dir = self.cache_dir / "poms"
         self.pom_cache_dir.mkdir(parents=True, exist_ok=True)
         self.log_file = self.cache_dir / "sbom-compile-order.log"
+
+    def _check_maven_available(self) -> bool:
+        """
+        Check if Maven is available on the system.
+
+        Returns:
+            True if Maven is available, False otherwise
+        """
+        try:
+            result = subprocess.run(
+                ["mvn", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            return result.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+            return False
 
     def _log(self, message: str) -> None:
         """
@@ -359,6 +389,163 @@ class POMDownloader:
                     urls.append(f"https://bitbucket.org/{user}/{repo}/raw/{branch}/{package_name}/pom.xml")
 
         return urls
+
+    def _download_pom_with_maven(self, component: Component, cached_pom: Path) -> Tuple[Optional[bytes], bool]:
+        """
+        Download POM file using Maven dependency:get plugin.
+
+        This uses Maven's built-in artifact resolution, which handles:
+        - Repository mirrors and proxies
+        - Authentication (if configured in settings.xml)
+        - Multiple repository fallbacks
+        - Proper artifact validation
+
+        Args:
+            component: Component to download POM for
+            cached_pom: Path where POM should be saved
+
+        Returns:
+            Tuple of (POM file content as bytes or None if failed, auth_required bool)
+        """
+        if not component.group or not component.name or not component.version:
+            return None, False
+
+        # Check if Maven is available
+        try:
+            result = subprocess.run(
+                ["mvn", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                self._log("[POM DOWNLOAD] Maven not available, falling back to HTTP download")
+                return None, False
+        except FileNotFoundError:
+            self._log("[POM DOWNLOAD] Maven command not found, falling back to HTTP download")
+            return None, False
+        except subprocess.TimeoutExpired:
+            self._log("[POM DOWNLOAD] Maven version check timed out, falling back to HTTP download")
+            return None, False
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            self._log(f"[POM DOWNLOAD] Error checking Maven availability: {exc}, falling back to HTTP download")
+            return None, False
+
+        # Ensure parent directory exists
+        cached_pom.parent.mkdir(parents=True, exist_ok=True)
+
+        # Build Maven artifact coordinate: groupId:artifactId:version:pom
+        artifact_coord = f"{component.group}:{component.name}:{component.version}:pom"
+
+        self._log(
+            f"[POM DOWNLOAD] Using Maven to download POM: {artifact_coord} "
+            f"to {cached_pom}"
+        )
+
+        try:
+            # Use Maven dependency:get plugin
+            # -Dtransitive=false: Don't download dependencies, just the POM
+            # -Ddest: Specify output location
+            # -DremoteRepositories: Use Maven Central (optional, Maven will use default if not specified)
+            cmd = [
+                "mvn",
+                "dependency:get",
+                f"-Dartifact={artifact_coord}",
+                f"-Ddest={cached_pom}",
+                "-Dtransitive=false",  # Only download the POM, not dependencies
+                "-DremoteRepositories=central::default::https://repo1.maven.org/maven2",
+            ]
+
+            if not self.verbose:
+                # Suppress Maven output unless verbose
+                cmd.extend(["-q"])  # Quiet mode
+
+            self._log(f"[POM DOWNLOAD] Executing Maven command: {' '.join(cmd)}")
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,  # 2 minute timeout
+            )
+
+            if result.returncode == 0:
+                # Verify file was downloaded
+                if cached_pom.exists():
+                    file_size = cached_pom.stat().st_size
+                    if file_size > 0:
+                        # Read and return POM content
+                        try:
+                            with open(cached_pom, "rb") as f:
+                                pom_content = f.read()
+                            
+                            # Basic validation: check if it looks like XML
+                            pom_text = pom_content.decode("utf-8", errors="ignore")
+                            if "<project" in pom_text or "<?xml" in pom_text:
+                                self._log(
+                                    f"[POM DOWNLOAD] SUCCESS: Maven downloaded POM: {cached_pom.name} "
+                                    f"({file_size} bytes) for {component.group}:{component.name}:{component.version}"
+                                )
+                                return pom_content, False
+                            else:
+                                self._log(
+                                    f"[POM DOWNLOAD] ERROR: Maven downloaded file doesn't appear to be a valid POM "
+                                    f"for {component.group}:{component.name}:{component.version}"
+                                )
+                                # Remove invalid file
+                                cached_pom.unlink()
+                                return None, False
+                        except Exception as read_exc:  # pylint: disable=broad-exception-caught
+                            self._log(
+                                f"[POM DOWNLOAD] ERROR: Failed to read Maven-downloaded POM: {read_exc}"
+                            )
+                            return None, False
+                    else:
+                        self._log(
+                            f"[POM DOWNLOAD] ERROR: Maven downloaded empty file: {cached_pom}"
+                        )
+                        if cached_pom.exists():
+                            cached_pom.unlink()
+                        return None, False
+                else:
+                    self._log(
+                        f"[POM DOWNLOAD] ERROR: Maven command succeeded but file not found: {cached_pom}"
+                    )
+                    return None, False
+            else:
+                # Check if authentication is required
+                error_output = result.stderr + result.stdout
+                if any(
+                    auth_indicator in error_output.lower()
+                    for auth_indicator in ["401", "403", "unauthorized", "authentication", "credentials"]
+                ):
+                    self._log(
+                        f"[POM DOWNLOAD] Authentication required for Maven download: "
+                        f"{component.group}:{component.name}:{component.version}"
+                    )
+                    return None, True
+
+                self._log(
+                    f"[POM DOWNLOAD] Maven download failed (exit code {result.returncode}): "
+                    f"{component.group}:{component.name}:{component.version}"
+                )
+                if self.verbose:
+                    self._log(f"[POM DOWNLOAD] Maven stderr: {result.stderr}")
+                    self._log(f"[POM DOWNLOAD] Maven stdout: {result.stdout}")
+                return None, False
+
+        except subprocess.TimeoutExpired:
+            self._log(
+                f"[POM DOWNLOAD] Maven download timed out for "
+                f"{component.group}:{component.name}:{component.version}"
+            )
+            return None, False
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            self._log(
+                f"[POM DOWNLOAD] Error executing Maven command: {exc} "
+                f"for {component.group}:{component.name}:{component.version}"
+            )
+            return None, False
 
     def _build_fallback_maven_url(self, component: Component, file_type: str) -> Optional[str]:
         """
@@ -716,8 +903,38 @@ class POMDownloader:
         # First, try downloading from Maven Central if requested
         # According to official API: https://central.sonatype.org/search/rest-api-guide/
         if self.download_from_maven_central and component.group and component.name and component.version:
+            # Try Maven first if enabled (more reliable, handles mirrors/proxies/auth)
+            if self.use_maven:
+                self._log(
+                    f"[POM DOWNLOAD] Attempting Maven download for "
+                    f"{component.group}:{component.name}:{component.version}"
+                )
+                pom_content, auth_required = self._download_pom_with_maven(component, cached_pom)
+                if pom_content:
+                    # POM already saved by Maven, just return the filename
+                    self._log(
+                        f"Successfully downloaded and cached POM using Maven: "
+                        f"{component.group}:{component.name}:{component.version} "
+                        f"(cache file: {cached_pom.name})"
+                    )
+                    self._log(f"[end] Package: {component_id} - successfully downloaded via Maven")
+                    return cached_pom.name, False
+                if auth_required:
+                    self._log(
+                        f"Authentication required for Maven POM download: "
+                        f"{component.group}:{component.name}:{component.version}"
+                    )
+                    self._log(f"[end] Package: {component_id} - authentication required")
+                    return None, True
+                # Fall through to HTTP download if Maven fails (but not due to auth)
+                self._log(
+                    f"[POM DOWNLOAD] Maven download failed, falling back to HTTP download for "
+                    f"{component.group}:{component.name}:{component.version}"
+                )
+            
+            # Download from Maven Central via HTTP (fallback or if Maven not enabled)
             self._log(
-                f"Attempting to download POM from Maven Central for "
+                f"Attempting to download POM from Maven Central (HTTP) for "
                 f"{component.group}:{component.name}:{component.version}"
             )
             pom_content, auth_required = self._download_pom_from_maven_central(component)

@@ -113,38 +113,43 @@ def create_enhanced_csv(
             print(error_msg, file=sys.stderr)
         return
 
+    # Read existing enhanced.csv if available to reuse download state
+    existing_enhanced_rows = {}
+    existing_row_count = 0
+    if enhanced_csv_path.exists():
+        try:
+            with open(enhanced_csv_path, "r", encoding="utf-8") as f:
+                reader = csv.reader(f)
+                existing_header = next(reader)
+                for existing_row in reader:
+                    if len(existing_row) > 3:
+                        key = f"{existing_row[1]}:{existing_row[2]}:{existing_row[3]}"
+                        existing_enhanced_rows[key] = existing_row
+                        existing_row_count += 1
+            log_msg = f"Existing enhanced.csv found ({existing_row_count} rows) - using download history when available"
+            _log_to_file(log_msg, log_file)
+            if verbose:
+                print(f"[INFO] {log_msg}", file=sys.stderr)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            log_msg = f"Failed to read existing enhanced.csv for reuse: {exc}"
+            _log_to_file(log_msg, log_file)
+            if verbose:
+                print(f"[INFO] {log_msg}", file=sys.stderr)
+
     # Check if incremental update is possible
     incremental_update = False
-    existing_enhanced_rows = {}
     if hash_cache and enhanced_csv_path.exists():
         compile_order_hash = hash_cache.get_compile_order_hash(compile_order_csv_path)
         cached_compile_order_hash = hash_cache.get_cached_compile_order_hash()
         if compile_order_hash and cached_compile_order_hash and compile_order_hash == cached_compile_order_hash:
-            # compile-order.csv unchanged, check if we can do incremental update
-            try:
-                # Read existing enhanced.csv to preserve data
-                with open(enhanced_csv_path, "r", encoding="utf-8") as f:
-                    reader = csv.reader(f)
-                    existing_header = next(reader)
-                    for existing_row in reader:
-                        if len(existing_row) > 1:
-                            # Use Group ID + Package Name + Version as key
-                            key = f"{existing_row[1]}:{existing_row[2]}:{existing_row[3]}"
-                            existing_enhanced_rows[key] = existing_row
-                incremental_update = True
-                log_msg = (
-                    f"compile-order.csv unchanged, performing incremental update of enhanced.csv "
-                    f"({len(existing_enhanced_rows)} existing rows)"
-                )
-                _log_to_file(log_msg, log_file)
-                if verbose:
-                    print(f"[INFO] {log_msg}", file=sys.stderr)
-            except Exception as exc:  # pylint: disable=broad-exception-caught
-                log_msg = f"Failed to read existing enhanced.csv for incremental update: {exc}, will regenerate"
-                _log_to_file(log_msg, log_file)
-                if verbose:
-                    print(f"[INFO] {log_msg}", file=sys.stderr)
-                incremental_update = False
+            incremental_update = True
+            log_msg = (
+                f"compile-order.csv unchanged, performing incremental update of enhanced.csv "
+                f"({len(existing_enhanced_rows)} existing rows)"
+            )
+            _log_to_file(log_msg, log_file)
+            if verbose:
+                print(f"[INFO] {log_msg}", file=sys.stderr)
 
     log_msg = f"Reading compile-order.csv: {compile_order_csv_path}"
     _log_to_file(log_msg, log_file)
@@ -212,16 +217,12 @@ def create_enhanced_csv(
 
         # Create key for incremental update lookup
         row_key = f"{group_id_col}:{package_name}:{version}"
-
-        # Check if we can use existing enhanced data (incremental update)
+        existing_row_entry = existing_enhanced_rows.get(row_key)
         use_existing_data = False
         existing_row_data = None
-        if incremental_update and row_key in existing_enhanced_rows:
-            existing_row_data = existing_enhanced_rows[row_key]
-            # In incremental mode, we preserve existing data but always check POM/JAR downloads
-            # if pom_downloader is available (to update download status)
-            # For other fields (homepage, license), use existing if available
-            use_existing_data = True  # Use existing data for non-download fields
+        if incremental_update and existing_row_entry:
+            existing_row_data = existing_row_entry
+            use_existing_data = True
 
         # Parse Group ID column - it may be "group:artifact" or just "group"
         group = ""
@@ -287,6 +288,44 @@ def create_enhanced_csv(
             from sbom_compile_order.parser import build_maven_central_url
             pom_url_maven = build_maven_central_url(comp.group, comp.name, comp.version, "pom")
             jar_url_maven = build_maven_central_url(comp.group, comp.name, comp.version, "jar")
+
+        # Determine if we already have the POM downloaded (even if enhanced.csv is stale)
+        downloaded_col_idx = len(header)
+        file_location_col_idx = downloaded_col_idx + 1
+        existing_downloaded_status = ""
+        existing_file_location = ""
+        if existing_row_entry and len(existing_row_entry) > downloaded_col_idx:
+            existing_downloaded_status = existing_row_entry[downloaded_col_idx]
+            if len(existing_row_entry) > file_location_col_idx:
+                existing_file_location = existing_row_entry[file_location_col_idx]
+        skip_pom_download = False
+        if (
+            pom_downloader
+            and existing_downloaded_status.lower() == "yes"
+            and existing_file_location
+        ):
+            relative_path = existing_file_location.lstrip("./")
+            existing_file_path = compile_order_csv_path.parent / relative_path
+            if existing_file_path.exists():
+                pom_filename = existing_file_path.name
+                downloaded_status = "yes"
+                file_location = existing_file_location
+                skip_pom_download = True
+                log_msg = (
+                    f"Reusing previously downloaded POM for {group}:{artifact}:{version}: "
+                    f"{existing_file_location}"
+                )
+                _log_to_file(log_msg, log_file)
+                if verbose:
+                    print(f"[INFO] {log_msg}", file=sys.stderr)
+            else:
+                log_msg = (
+                    f"Previously recorded POM missing on disk, will re-download: "
+                    f"{existing_file_location}"
+                )
+                _log_to_file(log_msg, log_file)
+                if verbose:
+                    print(f"[INFO] {log_msg}", file=sys.stderr)
         
         # Download POM file if pom_downloader is provided
         # In incremental mode, always check POM download status to update if needed
@@ -299,7 +338,7 @@ def create_enhanced_csv(
         
         # Always check POM download status if pom_downloader is available
         # This ensures download status is up-to-date even in incremental mode
-        if pom_downloader and comp.group and comp.name and comp.version:
+        if pom_downloader and comp.group and comp.name and comp.version and not skip_pom_download:
             try:
                 pom_result, auth_req = pom_downloader.download_pom(comp, repo_url or "")
                 pom_filename = pom_result or ""
@@ -383,7 +422,7 @@ def create_enhanced_csv(
                 _log_to_file(log_msg, log_file)
                 if verbose:
                     print(log_msg, file=sys.stderr)
-        elif pom_downloader:
+        elif pom_downloader and not skip_pom_download:
             # POM downloader available but missing required component data
             if not comp.group or not comp.name:
                 downloaded_status = "Missing group or artifact name"

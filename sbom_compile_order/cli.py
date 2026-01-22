@@ -8,6 +8,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import List
 
 from sbom_compile_order.dependency_resolver import DependencyResolver
 from sbom_compile_order.graph import DependencyGraph
@@ -131,6 +132,18 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--jar",
+        action="store_true",
+        help="Download JAR artifacts when pulling packages from Maven Central",
+    )
+
+    parser.add_argument(
+        "--war",
+        action="store_true",
+        help="Download WAR artifacts when pulling packages from Maven Central",
+    )
+
+    parser.add_argument(
         "-m",
         "--maven-central-lookup",
         action="store_true",
@@ -213,6 +226,18 @@ def main() -> None:
         if args.verbose:
             print(log_msg, file=sys.stderr)
     
+    package_types: List[str] = []
+    if args.jar:
+        package_types.append("jar")
+    if args.war:
+        package_types.append("war")
+
+    if package_types and not args.pull_package:
+        args.pull_package = True
+
+    if args.pull_package and not package_types:
+        package_types = ["jar"]
+
     # Auto-enable --poms and -m when --leaves is used
     if args.leaves:
         if not args.poms:
@@ -695,20 +720,22 @@ def main() -> None:
                 if args.poms or args.pull_package:
                     from sbom_compile_order.parallel_downloader import ParallelDownloader
                     
-                    parallel_downloader = ParallelDownloader(
-                        compile_order_csv_path=compile_order_path,
-                        pom_downloader=pom_downloader if args.poms else None,
-                        jar_downloader=package_downloader if args.pull_package else None,
-                        max_workers=5,  # Configurable parallel downloads
-                        verbose=args.verbose,
-                        log_file=log_file,
-                    )
+                parallel_downloader = ParallelDownloader(
+                    compile_order_csv_path=compile_order_path,
+                    pom_downloader=pom_downloader if args.poms else None,
+                    artifact_downloader=package_downloader if args.pull_package else None,
+                    artifact_types=package_types if args.pull_package else None,
+                    max_workers=5,  # Configurable parallel downloads
+                    verbose=args.verbose,
+                    log_file=log_file,
+                )
                     
                     download_types = []
                     if args.poms:
                         download_types.append("POMs")
                     if args.pull_package:
-                        download_types.append("JARs")
+                        artifact_labels = [f"{atype.upper()}s" for atype in package_types]
+                        download_types.extend(artifact_labels)
                     download_types_str = " and ".join(download_types)
                     
                     log_msg = (

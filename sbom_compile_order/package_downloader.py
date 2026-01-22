@@ -80,33 +80,38 @@ class PackageDownloader:
         with open(self.log_file, "a", encoding="utf-8") as f:
             f.write(f"{log_entry}\n")
 
-    def _get_maven_central_jar_url(self, component: Component) -> str:
+    def _get_maven_central_artifact_url(self, component: Component, artifact_type: str) -> str:
         """
-        Construct the Maven Central direct JAR download URL from component PURL.
+        Construct the Maven Central direct artifact download URL from component PURL.
 
         Args:
             component: Component object with PURL or coordinates
+            artifact_type: Artifact type (jar, war, etc.)
 
         Returns:
-            URL string for downloading the JAR from Maven Central
+            URL string for downloading the artifact from Maven Central
         """
+        file_type = artifact_type if artifact_type else "jar"
         if component.purl:
-            return build_maven_central_url_from_purl(component.purl, file_type="jar")
+            return build_maven_central_url_from_purl(component.purl, file_type=file_type)
         elif component.group and component.name and component.version:
-            # Fallback: build URL from coordinates if PURL not available
             from sbom_compile_order.parser import build_maven_central_url
-            return build_maven_central_url(component.group, component.name, component.version, "jar")
+            return build_maven_central_url(
+                component.group, component.name, component.version, file_type
+            )
         return ""
 
-    def download_package(self, component: Component) -> Tuple[Optional[str], bool]:
+    def download_package(
+        self, component: Component, artifact_type: str = "jar"
+    ) -> Tuple[Optional[str], bool]:
         """
-        Download JAR file for a component from Maven Central.
+        Download packaged artifact for a component from Maven Central.
 
         Args:
-            component: Component to download JAR for
+            component: Component to download artifact for
 
         Returns:
-            Tuple of (filename of cached JAR file or None if not found, auth_required bool)
+            Tuple of (filename of cached artifact file or None if not found, auth_required bool)
         """
         if not component.group or not component.name or not component.version:
             return None, False
@@ -122,20 +127,24 @@ class PackageDownloader:
             identifier = identifier.split("#")[0]
         # Replace problematic characters for filename
         cache_key = identifier.replace("/", "_").replace(":", "_").replace("@", "_")
-        cached_jar = self.jar_cache_dir / f"{cache_key}.jar"
+        artifact_type = artifact_type.lower()
+        cached_artifact = self.jar_cache_dir / f"{cache_key}.{artifact_type}"
+        artifact_label = artifact_type.upper()
 
         # Check if already cached
-        if cached_jar.exists():
-            self._log(f"Using cached JAR for {component.name}")
-            return cached_jar.name, False
+        if cached_artifact.exists():
+            self._log(f"Using cached {artifact_label} for {component.name}")
+            return cached_artifact.name, False
 
         # Try Maven first if enabled (more reliable, handles mirrors/proxies/auth)
         if self.use_maven:
             self._log(
-                f"[JAR DOWNLOAD] Attempting Maven download for "
+                f"[{artifact_label} DOWNLOAD] Attempting Maven download for "
                 f"{component.group}:{component.name}:{component.version}"
             )
-            maven_result, auth_required = self._download_jar_with_maven(component, cached_jar)
+            maven_result, auth_required = self._download_artifact_with_maven(
+                component, cached_artifact, artifact_type
+            )
             if maven_result:
                 return maven_result, False
             if auth_required:
@@ -143,75 +152,75 @@ class PackageDownloader:
             # Fall through to HTTP download if Maven fails (but not due to auth)
 
         # Download from Maven Central via HTTP (fallback or if Maven not enabled)
-        jar_url = self._get_maven_central_jar_url(component)
-        if not jar_url:
-            self._log(f"Failed to build JAR URL for {component.name}")
+        artifact_url = self._get_maven_central_artifact_url(component, artifact_type)
+        if not artifact_url:
+            self._log(f"Failed to build {artifact_label} URL for {component.name}")
             return None, False
-        self._log(f"[URL USING TO DOWNLOAD] {jar_url}")
-        self._log(f"Downloading JAR from Maven Central: {jar_url}")
+        self._log(f"[URL USING TO DOWNLOAD] {artifact_url}")
+        self._log(f"Downloading {artifact_label} from Maven Central: {artifact_url}")
 
         try:
             req = Request(jar_url)
             req.add_header("User-Agent", "sbom-compile-order/1.4.1")
             with urlopen(req, timeout=30) as response:
                 if response.getcode() == 200:
-                    jar_content = response.read()
-                    jar_size = len(jar_content)
+                    artifact_content = response.read()
+                    artifact_size = len(artifact_content)
                     
                     # Check if content is empty
-                    if jar_size == 0:
+                    if artifact_size == 0:
                         self._log(
-                            f"[JAR DOWNLOAD] ERROR: Downloaded empty file from Maven Central: "
+                            f"[{artifact_label} DOWNLOAD] ERROR: Downloaded empty file from Maven Central: "
                             f"{component.group}:{component.name}:{component.version}"
                         )
                         return None, False
                     
-                    # Validate JAR using zipfile module (Java-like validation)
-                    is_valid, validation_error = self._validate_jar_content(jar_content)
+                    # Validate artifact using zipfile module (Java-like validation)
+                    is_valid, validation_error = self._validate_artifact_content(artifact_content)
                     if is_valid:
                         # Ensure parent directory exists
-                        cached_jar.parent.mkdir(parents=True, exist_ok=True)
+                        cached_artifact.parent.mkdir(parents=True, exist_ok=True)
                         
                         try:
-                            self._log(f"[JAR SAVE] Writing JAR file to: {cached_jar}")
-                            with open(cached_jar, "wb") as f:
-                                bytes_written = f.write(jar_content)
+                            self._log(f"[{artifact_label} SAVE] Writing file to: {cached_artifact}")
+                            with open(cached_artifact, "wb") as f:
+                                bytes_written = f.write(artifact_content)
                                 f.flush()
                                 os.fsync(f.fileno())
-                            self._log(f"[JAR SAVE] Wrote {bytes_written} bytes to {cached_jar}")
+                            self._log(f"[{artifact_label} SAVE] Wrote {bytes_written} bytes to {cached_artifact}")
                             
                             # Verify file was written
-                            if cached_jar.exists():
-                                file_size = cached_jar.stat().st_size
-                                if file_size == jar_size:
+                            if cached_artifact.exists():
+                                file_size = cached_artifact.stat().st_size
+                                if file_size == artifact_size:
                                     self._log(
-                                        f"[JAR SAVE] SUCCESS: File verified on disk: {cached_jar} ({file_size} bytes)"
+                                        f"[{artifact_label} SAVE] SUCCESS: File verified on disk: {cached_artifact} ({file_size} bytes)"
                                     )
                                     self._log(
-                                        f"Cached JAR from Maven Central: {cached_jar.name} "
+                                        f"Cached {artifact_label} from Maven Central: {cached_artifact.name} "
                                         f"({component.group}:{component.name}:{component.version})"
                                     )
-                                    return cached_jar.name, False
+                                    return cached_artifact.name, False
                                 else:
                                     self._log(
-                                        f"[JAR SAVE] ERROR: File size mismatch - expected {jar_size} bytes, "
-                                        f"got {file_size} bytes: {cached_jar}"
+                                        f"[{artifact_label} SAVE] ERROR: File size mismatch - expected {artifact_size} bytes, "
+                                        f"got {file_size} bytes: {cached_artifact}"
                                     )
                             else:
                                 self._log(
-                                    f"[JAR SAVE] ERROR: File was not written to disk: {cached_jar}"
+                                    f"[{artifact_label} SAVE] ERROR: File was not written to disk: {cached_artifact}"
                                 )
                         except Exception as write_exc:  # pylint: disable=broad-exception-caught
                             self._log(
-                                f"[JAR SAVE] ERROR: Failed to write JAR file: {write_exc} "
+                                f"[{artifact_label} SAVE] ERROR: Failed to write file: {write_exc} "
                                 f"for {component.group}:{component.name}:{component.version}"
                             )
                             return None, False
                     else:
                         self._log(
-                            f"[JAR DOWNLOAD] ERROR: Downloaded file is not a valid JAR: {validation_error} "
+                            f"[{artifact_label} DOWNLOAD] ERROR: Downloaded file is not a valid {artifact_label}: {validation_error} "
                             f"for {component.group}:{component.name}:{component.version} "
-                            f"(size: {jar_size} bytes)"
+                            f"(size: {artifact_size} bytes)"
                         )
         except HTTPError as exc:
             if exc.code in [401, 403]:
@@ -219,73 +228,73 @@ class PackageDownloader:
             if exc.code == 404:
                 # Try fallback URL: https://mvnrepository.com/repos/central
                 self._log(
-                    f"Maven Central JAR not found (HTTP 404), trying fallback repository: "
+                    f"Maven Central {artifact_label} not found (HTTP 404), trying fallback repository: "
                     f"{component.group}:{component.name}:{component.version}"
                 )
-                fallback_jar_url = self._get_fallback_jar_url(component)
-                if fallback_jar_url:
-                    self._log(f"[URL USING TO DOWNLOAD] {fallback_jar_url}")
+                fallback_url = self._get_fallback_artifact_url(component, artifact_type)
+                if fallback_url:
+                    self._log(f"[URL USING TO DOWNLOAD] {fallback_url}")
                     try:
-                        fallback_req = Request(fallback_jar_url)
+                        fallback_req = Request(fallback_url)
                         fallback_req.add_header("User-Agent", "sbom-compile-order/1.4.1")
                         with urlopen(fallback_req, timeout=30) as fallback_response:
                             if fallback_response.getcode() == 200:
-                                jar_content = fallback_response.read()
-                                jar_size = len(jar_content)
+                                artifact_content = fallback_response.read()
+                                artifact_size = len(artifact_content)
                                 
                                 # Check if content is empty
-                                if jar_size == 0:
+                                if artifact_size == 0:
                                     self._log(
-                                        f"[JAR DOWNLOAD] ERROR: Downloaded empty file from fallback repository: "
+                                        f"[{artifact_label} DOWNLOAD] ERROR: Downloaded empty file from fallback repository: "
                                         f"{component.group}:{component.name}:{component.version}"
                                     )
-                                    continue
+                                    return None, False
                                 
-                                # Validate JAR using zipfile module (Java-like validation)
-                                is_valid, validation_error = self._validate_jar_content(jar_content)
+                                # Validate artifact using zipfile module (Java-like validation)
+                                is_valid, validation_error = self._validate_artifact_content(artifact_content)
                                 if is_valid:
                                     # Ensure parent directory exists
-                                    cached_jar.parent.mkdir(parents=True, exist_ok=True)
+                                    cached_artifact.parent.mkdir(parents=True, exist_ok=True)
                                     
                                     try:
-                                        self._log(f"[JAR SAVE] Writing JAR file to: {cached_jar}")
-                                        with open(cached_jar, "wb") as f:
-                                            bytes_written = f.write(jar_content)
+                                        self._log(f"[{artifact_label} SAVE] Writing file to: {cached_artifact}")
+                                        with open(cached_artifact, "wb") as f:
+                                            bytes_written = f.write(artifact_content)
                                             f.flush()
                                             os.fsync(f.fileno())
-                                        self._log(f"[JAR SAVE] Wrote {bytes_written} bytes to {cached_jar}")
+                                        self._log(f"[{artifact_label} SAVE] Wrote {bytes_written} bytes to {cached_artifact}")
                                         
                                         # Verify file was written
-                                        if cached_jar.exists():
-                                            file_size = cached_jar.stat().st_size
-                                            if file_size == jar_size:
+                                        if cached_artifact.exists():
+                                            file_size = cached_artifact.stat().st_size
+                                            if file_size == artifact_size:
                                                 self._log(
-                                                    f"[JAR SAVE] SUCCESS: File verified on disk: {cached_jar} ({file_size} bytes)"
+                                                    f"[{artifact_label} SAVE] SUCCESS: File verified on disk: {cached_artifact} ({file_size} bytes)"
                                                 )
                                                 self._log(
-                                                    f"Cached JAR from fallback repository (mvnrepository.com/repos/central): "
-                                                    f"{cached_jar.name} ({component.group}:{component.name}:{component.version})"
+                                                    f"Cached {artifact_label} from fallback repository (mvnrepository.com/repos/central): "
+                                                    f"{cached_artifact.name} ({component.group}:{component.name}:{component.version})"
                                                 )
-                                                return cached_jar.name, False
+                                                return cached_artifact.name, False
                                             else:
                                                 self._log(
-                                                    f"[JAR SAVE] ERROR: File size mismatch - expected {jar_size} bytes, "
-                                                    f"got {file_size} bytes: {cached_jar}"
+                                                    f"[{artifact_label} SAVE] ERROR: File size mismatch - expected {artifact_size} bytes, "
+                                                    f"got {file_size} bytes: {cached_artifact}"
                                                 )
                                         else:
                                             self._log(
-                                                f"[JAR SAVE] ERROR: File was not written to disk: {cached_jar}"
+                                                f"[{artifact_label} SAVE] ERROR: File was not written to disk: {cached_artifact}"
                                             )
                                     except Exception as write_exc:  # pylint: disable=broad-exception-caught
                                         self._log(
-                                            f"[JAR SAVE] ERROR: Failed to write JAR file from fallback: {write_exc} "
+                                            f"[{artifact_label} SAVE] ERROR: Failed to write file from fallback: {write_exc} "
                                             f"for {component.group}:{component.name}:{component.version}"
                                         )
                                 else:
                                     self._log(
-                                        f"[JAR DOWNLOAD] ERROR: Downloaded file from fallback is not a valid JAR: "
+                                        f"[{artifact_label} DOWNLOAD] ERROR: Downloaded file from fallback is not a valid {artifact_label}: "
                                         f"{validation_error} for {component.group}:{component.name}:{component.version} "
-                                        f"(size: {jar_size} bytes)"
+                                        f"(size: {artifact_size} bytes)"
                                     )
                     except HTTPError as fallback_exc:
                         if fallback_exc.code in [401, 403]:
@@ -301,53 +310,53 @@ class PackageDownloader:
                         )
             if self.verbose:
                 self._log(
-                    f"Maven Central JAR download failed (HTTP {exc.code}): "
+                    f"Maven Central {artifact_label} download failed (HTTP {exc.code}): "
                     f"{component.group}:{component.name}:{component.version}"
                 )
         except (URLError, Exception) as exc:  # pylint: disable=broad-exception-caught
             if self.verbose:
                 self._log(
-                    f"Maven Central JAR download failed: {exc} "
+                    f"Maven Central {artifact_label} download failed: {exc} "
                     f"for {component.group}:{component.name}:{component.version}"
                 )
         return None, False
 
-    def _validate_jar_content(self, jar_content: bytes) -> Tuple[bool, Optional[str]]:
+    def _validate_artifact_content(self, artifact_content: bytes) -> Tuple[bool, Optional[str]]:
         """
-        Validate JAR content using zipfile module (Java-like validation).
+        Validate artifact content using zipfile module (Java-like validation).
 
-        Validates that the content is a proper ZIP/JAR archive by attempting to open it.
+        Validates that the content is a proper ZIP-based archive by attempting to open it.
         This is more robust than just checking magic bytes.
 
         Args:
-            jar_content: JAR file content as bytes
+            artifact_content: Artifact file content as bytes
 
         Returns:
             Tuple of (is_valid, error_message)
         """
-        if not jar_content:
-            return False, "JAR content is empty"
+        if not artifact_content:
+            return False, "Artifact content is empty"
         
-        if len(jar_content) < 4:
-            return False, f"JAR content too small ({len(jar_content)} bytes)"
+        if len(artifact_content) < 4:
+            return False, f"Artifact content too small ({len(artifact_content)} bytes)"
         
         # Check ZIP magic bytes first (quick check)
-        if jar_content[:4] != b"PK\x03\x04":
-            return False, f"Invalid ZIP magic bytes: {jar_content[:4]}"
+        if artifact_content[:4] != b"PK\x03\x04":
+            return False, f"Invalid ZIP magic bytes: {artifact_content[:4]}"
         
         # Validate using zipfile module (proper ZIP structure validation)
         try:
-            with zipfile.ZipFile(io.BytesIO(jar_content), 'r') as jar_file:
+            with zipfile.ZipFile(io.BytesIO(artifact_content), 'r') as jar_file:
                 # Test that we can read the file list (validates ZIP structure)
                 file_list = jar_file.namelist()
                 
-                # Check for MANIFEST.MF (standard JAR file should have this)
+                # Check for MANIFEST.MF (standard JAR/WAR file should have this)
                 has_manifest = 'META-INF/MANIFEST.MF' in file_list
                 
                 # Log some metadata if verbose
                 if self.verbose:
                     self._log(
-                        f"[JAR VALIDATION] Valid JAR archive with {len(file_list)} entries, "
+                        f"[ARTIFACT VALIDATION] Valid artifact archive with {len(file_list)} entries, "
                         f"has MANIFEST.MF: {has_manifest}"
                     )
                 
@@ -355,11 +364,13 @@ class PackageDownloader:
         except zipfile.BadZipFile as exc:
             return False, f"Invalid ZIP/JAR structure: {exc}"
         except Exception as exc:  # pylint: disable=broad-exception-caught
-            return False, f"Error validating JAR: {exc}"
+            return False, f"Error validating artifact: {exc}"
 
-    def _download_jar_with_maven(self, component: Component, cached_jar: Path) -> Tuple[Optional[str], bool]:
+    def _download_artifact_with_maven(
+        self, component: Component, cached_artifact: Path, artifact_type: str
+    ) -> Tuple[Optional[str], bool]:
         """
-        Download JAR file using Maven dependency:get plugin.
+        Download artifact using Maven dependency:get plugin.
 
         This uses Maven's built-in artifact resolution, which handles:
         - Repository mirrors and proxies
@@ -368,12 +379,14 @@ class PackageDownloader:
         - Proper artifact validation
 
         Args:
-            component: Component to download JAR for
-            cached_jar: Path where JAR should be saved
+            component: Component to download artifact for
+            cached_artifact: Path where artifact should be saved
+            artifact_type: Artifact type (jar, war, etc.)
 
         Returns:
-            Tuple of (filename of cached JAR file or None if not found, auth_required bool)
+            Tuple of (filename of cached artifact file or None if not found, auth_required bool)
         """
+        artifact_label = artifact_type.upper()
         if not component.group or not component.name or not component.version:
             return None, False
 
@@ -386,146 +399,137 @@ class PackageDownloader:
                 timeout=10,
             )
             if result.returncode != 0:
-                self._log("[JAR DOWNLOAD] Maven not available, falling back to HTTP download")
+                self._log(f"[{artifact_label} DOWNLOAD] Maven not available, falling back to HTTP download")
                 return None, False
         except FileNotFoundError:
-            self._log("[JAR DOWNLOAD] Maven command not found, falling back to HTTP download")
+            self._log(f"[{artifact_label} DOWNLOAD] Maven command not found, falling back to HTTP download")
             return None, False
         except subprocess.TimeoutExpired:
-            self._log("[JAR DOWNLOAD] Maven version check timed out, falling back to HTTP download")
+            self._log(
+                f"[{artifact_label} DOWNLOAD] Maven version check timed out, falling back to HTTP download"
+            )
             return None, False
         except Exception as exc:  # pylint: disable=broad-exception-caught
-            self._log(f"[JAR DOWNLOAD] Error checking Maven availability: {exc}, falling back to HTTP download")
+            self._log(
+                f"[{artifact_label} DOWNLOAD] Error checking Maven availability: {exc}, falling back to HTTP download"
+            )
             return None, False
 
         # Ensure parent directory exists
-        cached_jar.parent.mkdir(parents=True, exist_ok=True)
+        cached_artifact.parent.mkdir(parents=True, exist_ok=True)
 
-        # Build Maven artifact coordinate: groupId:artifactId:version:jar
-        artifact_coord = f"{component.group}:{component.name}:{component.version}:jar"
+        # Build Maven artifact coordinate: groupId:artifactId:version:type
+        artifact_coord = f"{component.group}:{component.name}:{component.version}:{artifact_type}"
 
         self._log(
-            f"[JAR DOWNLOAD] Using Maven to download artifact: {artifact_coord} "
-            f"to {cached_jar}"
+            f"[{artifact_label} DOWNLOAD] Using Maven to download artifact: {artifact_coord} "
+            f"to {cached_artifact}"
         )
 
         try:
-            # Use Maven dependency:get plugin
-            # -Dtransitive=false: Don't download dependencies, just the artifact
-            # -Ddest: Specify output location
-            # -DremoteRepositories: Use Maven Central (optional, Maven will use default if not specified)
             cmd = [
                 "mvn",
                 "dependency:get",
                 f"-Dartifact={artifact_coord}",
-                f"-Ddest={cached_jar}",
-                "-Dtransitive=false",  # Only download the artifact, not dependencies
+                f"-Ddest={cached_artifact}",
+                "-Dtransitive=false",
                 "-DremoteRepositories=central::default::https://repo1.maven.org/maven2",
             ]
 
             if not self.verbose:
-                # Suppress Maven output unless verbose
-                cmd.extend(["-q"])  # Quiet mode
+                cmd.extend(["-q"])
 
-            self._log(f"[JAR DOWNLOAD] Executing Maven command: {' '.join(cmd)}")
+            self._log(f"[{artifact_label} DOWNLOAD] Executing Maven command: {' '.join(cmd)}")
 
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=120,  # 2 minute timeout
+                timeout=120,
             )
 
             if result.returncode == 0:
-                # Verify file was downloaded
-                if cached_jar.exists():
-                    file_size = cached_jar.stat().st_size
+                if cached_artifact.exists():
+                    file_size = cached_artifact.stat().st_size
                     if file_size > 0:
-                        # Validate the downloaded JAR
                         try:
-                            with open(cached_jar, "rb") as f:
-                                jar_content = f.read()
-                            is_valid, validation_error = self._validate_jar_content(jar_content)
+                            with open(cached_artifact, "rb") as f:
+                                artifact_content = f.read()
+                            is_valid, validation_error = self._validate_artifact_content(artifact_content)
                             if is_valid:
                                 self._log(
-                                    f"[JAR DOWNLOAD] SUCCESS: Maven downloaded JAR: {cached_jar.name} "
+                                    f"[{artifact_label} DOWNLOAD] SUCCESS: Maven downloaded {artifact_label}: {cached_artifact.name} "
                                     f"({file_size} bytes) for {component.group}:{component.name}:{component.version}"
                                 )
-                                return cached_jar.name, False
-                            else:
-                                self._log(
-                                    f"[JAR DOWNLOAD] ERROR: Maven downloaded invalid JAR: {validation_error} "
-                                    f"for {component.group}:{component.name}:{component.version}"
-                                )
-                                # Remove invalid file
-                                cached_jar.unlink()
-                                return None, False
+                                return cached_artifact.name, False
+                            self._log(
+                                f"[{artifact_label} DOWNLOAD] ERROR: Maven downloaded invalid {artifact_label}: {validation_error} "
+                                f"for {component.group}:{component.name}:{component.version}"
+                            )
+                            cached_artifact.unlink()
+                            return None, False
                         except Exception as validation_exc:  # pylint: disable=broad-exception-caught
                             self._log(
-                                f"[JAR DOWNLOAD] ERROR: Failed to validate Maven-downloaded JAR: {validation_exc}"
+                                f"[{artifact_label} DOWNLOAD] ERROR: Failed to validate Maven-downloaded {artifact_label}: {validation_exc}"
                             )
                             return None, False
-                    else:
-                        self._log(
-                            f"[JAR DOWNLOAD] ERROR: Maven downloaded empty file: {cached_jar}"
-                        )
-                        if cached_jar.exists():
-                            cached_jar.unlink()
-                        return None, False
-                else:
                     self._log(
-                        f"[JAR DOWNLOAD] ERROR: Maven command succeeded but file not found: {cached_jar}"
+                        f"[{artifact_label} DOWNLOAD] ERROR: Maven downloaded empty file: {cached_artifact}"
                     )
+                    if cached_artifact.exists():
+                        cached_artifact.unlink()
                     return None, False
-            else:
-                # Check if authentication is required
-                error_output = result.stderr + result.stdout
-                if any(
-                    auth_indicator in error_output.lower()
-                    for auth_indicator in ["401", "403", "unauthorized", "authentication", "credentials"]
-                ):
-                    self._log(
-                        f"[JAR DOWNLOAD] Authentication required for Maven download: "
-                        f"{component.group}:{component.name}:{component.version}"
-                    )
-                    return None, True
-
                 self._log(
-                    f"[JAR DOWNLOAD] Maven download failed (exit code {result.returncode}): "
+                    f"[{artifact_label} DOWNLOAD] ERROR: Maven command succeeded but file not found: {cached_artifact}"
+                )
+                return None, False
+            error_output = result.stderr + result.stdout
+            if any(
+                auth_indicator in error_output.lower()
+                for auth_indicator in ["401", "403", "unauthorized", "authentication", "credentials"]
+            ):
+                self._log(
+                    f"[{artifact_label} DOWNLOAD] Authentication required for Maven download: "
                     f"{component.group}:{component.name}:{component.version}"
                 )
-                if self.verbose:
-                    self._log(f"[JAR DOWNLOAD] Maven stderr: {result.stderr}")
-                    self._log(f"[JAR DOWNLOAD] Maven stdout: {result.stdout}")
-                return None, False
+                return None, True
+            self._log(
+                f"[{artifact_label} DOWNLOAD] Maven download failed (exit code {result.returncode}): "
+                f"{component.group}:{component.name}:{component.version}"
+            )
+            if self.verbose:
+                self._log(f"[{artifact_label} DOWNLOAD] Maven stderr: {result.stderr}")
+                self._log(f"[{artifact_label} DOWNLOAD] Maven stdout: {result.stdout}")
+            return None, False
 
         except subprocess.TimeoutExpired:
             self._log(
-                f"[JAR DOWNLOAD] Maven download timed out for "
+                f"[{artifact_label} DOWNLOAD] Maven download timed out for "
                 f"{component.group}:{component.name}:{component.version}"
             )
             return None, False
         except Exception as exc:  # pylint: disable=broad-exception-caught
             self._log(
-                f"[JAR DOWNLOAD] Error executing Maven command: {exc} "
+                f"[{artifact_label} DOWNLOAD] Error executing Maven command: {exc} "
                 f"for {component.group}:{component.name}:{component.version}"
             )
             return None, False
 
-    def _get_fallback_jar_url(self, component: Component) -> str:
+    def _get_fallback_artifact_url(self, component: Component, artifact_type: str) -> str:
         """
-        Construct the fallback Maven Central JAR URL using mvnrepository.com/repos/central.
+        Construct the fallback Maven Central artifact URL using mvnrepository.com/repos/central.
 
         Args:
             component: Component object with PURL or coordinates
+            artifact_type: Artifact type (jar, war, etc.)
 
         Returns:
-            URL string for downloading the JAR from fallback repository
+            URL string for downloading the artifact from fallback repository
         """
         if component.group and component.name and component.version:
             from sbom_compile_order.parser import build_maven_central_url
             fallback_base_url = "https://mvnrepository.com/repos/central"
             return build_maven_central_url(
-                component.group, component.name, component.version, "jar", base_url=fallback_base_url
+                component.group, component.name, component.version, artifact_type, base_url=fallback_base_url
             )
         return ""

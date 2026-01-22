@@ -121,6 +121,9 @@ The CSV format is particularly useful for:
 - `-f, --format FORMAT`: Output format: `text`, `json`, or `csv` (default: `text`)
 - `-v, --verbose`: Enable verbose output showing progress
 - `--include-metadata`: Include full component metadata in output
+- `--pull-package`: Download packages (JARs) from Maven Central
+- `--jar`: Download JAR artifacts when pulling packages (implies `--pull-package`)
+- `--war`: Download WAR artifacts when pulling packages (implies `--pull-package`)
 
 ## Handling Circular Dependencies
 

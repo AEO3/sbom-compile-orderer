@@ -193,6 +193,9 @@ Filtering Options:
 Maven Central Integration:
   -m, --maven-central-lookup    Look up package information from Maven Central API
   --poms                        Download POM files from Maven Central
+  --pull-package                Download packages (JARs) from Maven Central
+  --jar                         Download JAR artifacts when pulling packages (implies --pull-package)
+  --war                         Download WAR artifacts when pulling packages (implies --pull-package)
   -c, --clone-repos              Clone repositories to find POM files
 
 Dependency Resolution:

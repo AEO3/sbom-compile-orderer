@@ -22,7 +22,8 @@ class ParallelDownloader:
         self,
         compile_order_csv_path: Path,
         pom_downloader=None,
-        jar_downloader=None,
+        artifact_downloader=None,
+        artifact_types: Optional[List[str]] = None,
         max_workers: int = 5,
         verbose: bool = False,
         log_file: Optional[Path] = None,
@@ -40,7 +41,13 @@ class ParallelDownloader:
         """
         self.compile_order_csv_path = compile_order_csv_path
         self.pom_downloader = pom_downloader
-        self.jar_downloader = jar_downloader
+        self.artifact_downloader = artifact_downloader
+        normalized_artifact_types = (
+            [atype.lower() for atype in artifact_types if atype]
+            if artifact_types
+            else ["jar"]
+        )
+        self.artifact_types = normalized_artifact_types
         self.max_workers = max_workers
         self.verbose = verbose
         self.log_file = log_file
@@ -147,32 +154,39 @@ class ParallelDownloader:
             self._log(f"[PARALLEL DOWNLOAD] ERROR downloading POM for {component_id}: {exc}")
         return component_id, False, "pom"
 
-    def _download_jar(self, component: Component) -> Tuple[str, bool, str]:
+    def _download_artifact(
+        self, component: Component, artifact_type: str
+    ) -> Tuple[str, bool, str]:
         """
-        Download JAR for a component.
+        Download a specific artifact type for a component.
 
         Args:
-            component: Component to download JAR for
+            component: Component to download artifact for
+            artifact_type: Artifact type (e.g., "jar", "war")
 
         Returns:
-            Tuple of (component_id, success, "jar")
+            Tuple of (component_id, success, artifact_type)
         """
         component_id = f"{component.group}:{component.name}:{component.version}"
+        artifact_label = artifact_type.upper()
         try:
-            if self.jar_downloader:
-                jar_filename, auth_required = self.jar_downloader.download_package(component)
-                if jar_filename:
-                    self._log(f"[PARALLEL DOWNLOAD] Downloaded JAR: {component_id} -> {jar_filename}")
-                    return component_id, True, "jar"
-                elif auth_required:
-                    self._log(f"[PARALLEL DOWNLOAD] JAR requires auth: {component_id}")
-                    return component_id, False, "jar"
-                else:
-                    self._log(f"[PARALLEL DOWNLOAD] JAR download failed: {component_id}")
-                    return component_id, False, "jar"
+            if self.artifact_downloader:
+                artifact_filename, auth_required = self.artifact_downloader.download_package(
+                    component, artifact_type=artifact_type
+                )
+                if artifact_filename:
+                    self._log(
+                        f"[PARALLEL DOWNLOAD] Downloaded {artifact_label}: {component_id} -> {artifact_filename}"
+                    )
+                    return component_id, True, artifact_type
+                if auth_required:
+                    self._log(f"[PARALLEL DOWNLOAD] {artifact_label} requires auth: {component_id}")
+                    return component_id, False, artifact_type
+                self._log(f"[PARALLEL DOWNLOAD] {artifact_label} download failed: {component_id}")
+                return component_id, False, artifact_type
         except Exception as exc:  # pylint: disable=broad-exception-caught
-            self._log(f"[PARALLEL DOWNLOAD] ERROR downloading JAR for {component_id}: {exc}")
-        return component_id, False, "jar"
+            self._log(f"[PARALLEL DOWNLOAD] ERROR downloading {artifact_label} for {component_id}: {exc}")
+        return component_id, False, artifact_type
 
     def start_background_downloads(self) -> Optional[threading.Thread]:
         """
@@ -207,8 +221,9 @@ class ParallelDownloader:
 
                 if self.pom_downloader:
                     download_tasks.append(("pom", comp))
-                if self.jar_downloader:
-                    download_tasks.append(("jar", comp))
+                if self.artifact_downloader:
+                    for artifact_type in self.artifact_types:
+                        download_tasks.append((artifact_type, comp))
 
             if not download_tasks:
                 self._log("[PARALLEL DOWNLOAD] No download tasks created")
@@ -226,8 +241,8 @@ class ParallelDownloader:
                 for file_type, comp in download_tasks:
                     if file_type == "pom":
                         future = executor.submit(self._download_pom, comp)
-                    else:  # jar
-                        future = executor.submit(self._download_jar, comp)
+                    else:
+                        future = executor.submit(self._download_artifact, comp, file_type)
                     future_to_task[future] = (file_type, comp)
 
                 # Process completed downloads

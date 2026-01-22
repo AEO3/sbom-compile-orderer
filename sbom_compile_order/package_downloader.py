@@ -465,6 +465,8 @@ class PackageDownloader:
             )
 
             if result.returncode == 0:
+                if not cached_artifact.exists():
+                    self._try_copy_from_maven_local_repo(component, cached_artifact, artifact_type)
                 if cached_artifact.exists():
                     file_size = cached_artifact.stat().st_size
                     if file_size > 0:
@@ -549,3 +551,27 @@ class PackageDownloader:
                 component.group, component.name, component.version, artifact_type, base_url=fallback_base_url
             )
         return ""
+
+    def _try_copy_from_maven_local_repo(
+        self, component: Component, cached_artifact: Path, artifact_type: str
+    ) -> None:
+        """
+        When Maven downloads succeed but dest file isn't written, copy from Maven local repo.
+        """
+        if not component.group or not component.name or not component.version:
+            return
+
+        group_path = component.group.replace(".", "/")
+        artifact_filename = f"{component.name}-{component.version}.{artifact_type}"
+        local_repo_path = Path.home() / ".m2" / "repository" / group_path / component.name / component.version / artifact_filename
+        if local_repo_path.exists():
+            try:
+                cached_artifact.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(local_repo_path, cached_artifact)
+                self._log(
+                    f"[{artifact_type.upper()} DOWNLOAD] Copied {artifact_filename} from local Maven repo to cache"
+                )
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                self._log(
+                    f"[{artifact_type.upper()} DOWNLOAD] Failed to copy artifact from local Maven repo: {exc}"
+                )

@@ -8,7 +8,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from sbom_compile_order.dependency_resolver import DependencyResolver
 from sbom_compile_order.graph import DependencyGraph
@@ -41,6 +41,81 @@ def _log_to_file(message: str, log_file: Path) -> None:
     except Exception as exc:  # pylint: disable=broad-exception-caught
         # Log to stderr if file logging fails
         print(f"Warning: Failed to write to log file {log_file}: {exc}", file=sys.stderr)
+
+
+def _start_parallel_downloads(
+    compile_order_csv_path: Path,
+    pom_downloader,
+    package_downloader,
+    package_types: List[str],
+    log_file: Path,
+    verbose: bool,
+    context: str,
+) -> Optional["threading.Thread"]:
+    """
+    Start background downloads for configured POMs and artifacts.
+    """
+    if not pom_downloader and not package_downloader:
+        return None
+
+    from sbom_compile_order.parallel_downloader import ParallelDownloader
+
+    download_types: List[str] = []
+    if pom_downloader:
+        download_types.append("POMs")
+    if package_downloader and package_types:
+        artifact_labels = [f"{atype.upper()}s" for atype in package_types]
+        download_types.extend(artifact_labels)
+
+    if not download_types:
+        return None
+
+    parallel_downloader = ParallelDownloader(
+        compile_order_csv_path=compile_order_csv_path,
+        pom_downloader=pom_downloader,
+        artifact_downloader=package_downloader,
+        artifact_types=package_types,
+        max_workers=5,
+        verbose=verbose,
+        log_file=log_file,
+    )
+
+    download_types_str = " and ".join(download_types)
+    log_msg = (
+        f"Starting parallel background downloads ({download_types_str}) {context}"
+    )
+    _log_to_file(log_msg, log_file)
+    if verbose:
+        print(log_msg, file=sys.stderr)
+
+    return parallel_downloader.start_background_downloads()
+
+
+def _wait_for_parallel_downloads(
+    parallel_download_thread: Optional["threading.Thread"],
+    log_file: Path,
+    verbose: bool,
+) -> None:
+    if not parallel_download_thread:
+        return
+
+    log_msg = "Waiting for parallel background downloads to complete..."
+    _log_to_file(log_msg, log_file)
+    if verbose:
+        print(log_msg, file=sys.stderr)
+
+    parallel_download_thread.join(timeout=300)
+
+    if parallel_download_thread.is_alive():
+        log_msg = "[PARALLEL DOWNLOAD] Background downloads still running (will continue in background)"
+        _log_to_file(log_msg, log_file)
+        if verbose:
+            print(log_msg, file=sys.stderr)
+    else:
+        log_msg = "[PARALLEL DOWNLOAD] Background downloads completed"
+        _log_to_file(log_msg, log_file)
+        if verbose:
+            print(log_msg, file=sys.stderr)
 
 
 def main() -> None:
@@ -742,38 +817,15 @@ def main() -> None:
                     print(log_msg, file=sys.stderr)
                 
                 # Start parallel background downloads if requested
-                parallel_download_thread = None
-                if args.poms or args.pull_package:
-                    from sbom_compile_order.parallel_downloader import ParallelDownloader
-
-                    parallel_downloader = ParallelDownloader(
-                        compile_order_csv_path=compile_order_path,
-                        pom_downloader=pom_downloader if args.poms else None,
-                        artifact_downloader=package_downloader if args.pull_package else None,
-                        artifact_types=package_types if args.pull_package else None,
-                        max_workers=5,  # Configurable parallel downloads
-                        verbose=args.verbose,
-                        log_file=log_file,
-                    )
-
-                    download_types = []
-                    if args.poms:
-                        download_types.append("POMs")
-                    if args.pull_package:
-                        artifact_labels = [f"{atype.upper()}s" for atype in package_types]
-                        download_types.extend(artifact_labels)
-                    download_types_str = " and ".join(download_types)
-
-                    log_msg = (
-                        f"Starting parallel background downloads ({download_types_str}) "
-                        f"while enhanced.csv is being created"
-                    )
-                    _log_to_file(log_msg, log_file)
-                    if args.verbose:
-                        print(log_msg, file=sys.stderr)
-
-                    # Start background download thread
-                    parallel_download_thread = parallel_downloader.start_background_downloads()
+                parallel_download_thread = _start_parallel_downloads(
+                    compile_order_path,
+                    pom_downloader if args.poms else None,
+                    package_downloader if args.pull_package else None,
+                    package_types if args.pull_package else [],
+                    log_file,
+                    args.verbose,
+                    "while enhanced.csv is being created",
+                )
                 
                 # Pass pom_downloader to enhanced CSV so POM downloads happen there, not in compile-order.csv
                 # Also pass hash_cache for incremental updates
@@ -789,25 +841,7 @@ def main() -> None:
                     hash_cache=hash_cache,  # Pass hash cache for incremental updates
                 )
                 
-                # Wait for parallel downloads to complete
-                if parallel_download_thread:
-                    log_msg = "Waiting for parallel background downloads to complete..."
-                    _log_to_file(log_msg, log_file)
-                    if args.verbose:
-                        print(log_msg, file=sys.stderr)
-                    
-                    parallel_download_thread.join(timeout=300)  # Wait up to 5 minutes
-                    
-                    if parallel_download_thread.is_alive():
-                        log_msg = "[PARALLEL DOWNLOAD] Background downloads still running (will continue in background)"
-                        _log_to_file(log_msg, log_file)
-                        if args.verbose:
-                            print(log_msg, file=sys.stderr)
-                    else:
-                        log_msg = "[PARALLEL DOWNLOAD] Background downloads completed"
-                        _log_to_file(log_msg, log_file)
-                        if args.verbose:
-                            print(log_msg, file=sys.stderr)
+                _wait_for_parallel_downloads(parallel_download_thread, log_file, args.verbose)
                 
                 # Save enhanced.csv hash after creation/update
                 enhanced_hash = hash_cache.get_enhanced_hash(enhanced_csv_path)
@@ -840,6 +874,19 @@ def main() -> None:
                         _log_to_file(log_msg, log_file)
                         if args.verbose:
                             print(log_msg, file=sys.stderr)
+
+        # Start package downloads when Maven lookups are not requested but --pull-package is set
+        if args.pull_package and not args.maven_central_lookup:
+            package_download_thread = _start_parallel_downloads(
+                output_path,
+                None,
+                package_downloader,
+                package_types,
+                log_file,
+                args.verbose,
+                "after compile-order.csv creation",
+            )
+            _wait_for_parallel_downloads(package_download_thread, log_file, args.verbose)
 
             # STUBBED OUT: Package download functionality disabled
             # if package_downloader:

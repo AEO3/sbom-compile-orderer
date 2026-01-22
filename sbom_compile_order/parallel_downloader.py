@@ -1,5 +1,5 @@
-"""
-Parallel downloader for POM and JAR files.
+""" 
+Parallel downloader for POM and artifacts.
 
 Downloads files in parallel using threading while enhanced.csv is being created.
 """
@@ -34,7 +34,7 @@ class ParallelDownloader:
         Args:
             compile_order_csv_path: Path to compile-order.csv file
             pom_downloader: Optional POMDownloader instance
-            jar_downloader: Optional PackageDownloader instance
+            artifact_downloader: Optional PackageDownloader instance
             max_workers: Maximum number of parallel download threads
             verbose: Enable verbose output
             log_file: Optional path to log file
@@ -195,7 +195,7 @@ class ParallelDownloader:
         Returns:
             Thread object that can be joined later, or None if no downloaders configured
         """
-        if not self.pom_downloader and not self.jar_downloader:
+        if not self.pom_downloader and not self.artifact_downloader:
             self._log("[PARALLEL DOWNLOAD] No downloaders configured, skipping parallel downloads")
             return None
 

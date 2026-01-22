@@ -311,13 +311,6 @@ def create_enhanced_csv(
                 downloaded_status = "yes"
                 file_location = existing_file_location
                 skip_pom_download = True
-                log_msg = (
-                    f"Reusing previously downloaded POM for {group}:{artifact}:{version}: "
-                    f"{existing_file_location}"
-                )
-                _log_to_file(log_msg, log_file)
-                if verbose:
-                    print(f"[INFO] {log_msg}", file=sys.stderr)
             else:
                 log_msg = (
                     f"Previously recorded POM missing on disk, will re-download: "

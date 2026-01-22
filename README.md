@@ -17,7 +17,24 @@ A Python application that analyses CycloneDX SBOM (Software Bill of Materials) f
 ### Prerequisites
 
 - Python 3.12 or higher
-- pip (Python package manager)
+- pip (Python package manager) or pipx
+
+### Install with pipx (Recommended)
+
+[pipx](https://pipx.pypa.io/) installs Python applications in isolated environments, preventing dependency conflicts:
+
+```bash
+# Install from source directory
+pipx install .
+
+# Or install from a built wheel
+pipx install dist/sbom_compile_order-*.whl
+
+# Or install from Git repository
+pipx install git+https://github.com/yourusername/sbom-compile-order.git
+```
+
+After installation with pipx, the `sbom-compile-order` command will be available globally.
 
 ### Install from Source (Editable Mode)
 
@@ -80,7 +97,7 @@ pip install dist/sbom_compile_order-1.0.0-py3-none-any.whl
 ## Quick Start
 
 ```bash
-# Basic usage - output compilation order to stdout
+# Basic usage - output compilation order to CSV (default format)
 sbom-compile-order example_sbom.json
 
 # Output to file in JSON format
@@ -93,6 +110,65 @@ sbom-compile-order example_sbom.json -o compile-order.csv -f csv
 sbom-compile-order example_sbom.json -v --include-metadata
 ```
 
+## Usage Examples
+
+### Basic Examples
+
+```bash
+# Generate CSV compilation order (saved to cache/compile-order.csv)
+sbom-compile-order my-project.sbom.json
+
+# Generate JSON output to stdout
+sbom-compile-order my-project.sbom.json -f json
+
+# Generate text output to a file
+sbom-compile-order my-project.sbom.json -f text -o compile-order.txt
+
+# Verbose mode to see detailed processing information
+sbom-compile-order my-project.sbom.json -v
+```
+
+### Advanced Examples
+
+```bash
+# Download POM files from Maven Central and create enhanced CSV
+sbom-compile-order my-project.sbom.json --poms
+
+# Look up package information from Maven Central (homepage, license)
+sbom-compile-order my-project.sbom.json -m
+
+# Resolve transitive dependencies and create extended CSV
+sbom-compile-order my-project.sbom.json -r --max-dependency-depth 3
+
+# Extract dependencies from POM files and create leaves.csv
+sbom-compile-order my-project.sbom.json --leaves
+
+# Filter out specific group IDs
+sbom-compile-order my-project.sbom.json --ignore-group-ids com.example org.test
+
+# Exclude specific component types
+sbom-compile-order my-project.sbom.json --exclude-types application
+
+# Exclude specific package types (e.g., npm, pypi)
+sbom-compile-order my-project.sbom.json --exclude-package-types npm pypi
+
+# Clone repositories to find POM files (instead of Maven Central)
+sbom-compile-order my-project.sbom.json -c
+
+# Combine multiple options: download POMs, resolve dependencies, verbose output
+sbom-compile-order my-project.sbom.json --poms -r -v --max-dependency-depth 2
+```
+
+### Output Files
+
+The tool creates several output files in the `cache/` directory:
+
+- **compile-order.csv**: Base compilation order (created by default)
+- **enhanced.csv**: Enhanced CSV with Maven Central lookups and POM downloads (created with `-m` or `--poms`)
+- **extended-dependencies.csv**: Extended dependencies with transitive resolution (created with `-r`)
+- **leaves.csv**: Dependencies found in POM files but not in compile-order.csv (created with `--leaves`)
+- **sbom-compile-order.log**: Detailed log file with all processing information
+
 ## Usage
 
 ### Command-Line Options
@@ -103,12 +179,34 @@ sbom-compile-order <sbom-file.json> [OPTIONS]
 Arguments:
   sbom_file                 Path to the CycloneDX SBOM JSON file (required)
 
-Options:
-  -o, --output FILE         Output file path (default: stdout)
-  -f, --format FORMAT       Output format: text, json, or csv (default: text)
+Output Options:
+  -o, --output FILE         Output file path (default: cache/compile-order.csv for CSV, stdout for other formats)
+  -f, --format FORMAT       Output format: text, json, or csv (default: csv)
   -v, --verbose             Enable verbose output
-  --include-metadata         Include component metadata in output
-  -h, --help                Show help message
+  -i, --include-metadata     Include component metadata in output
+
+Filtering Options:
+  --ignore-group-ids IDS    Group IDs to ignore (space-separated)
+  --exclude-types TYPES      Component types to exclude (space-separated)
+  --exclude-package-types    Package types to exclude (space-separated)
+
+Maven Central Integration:
+  -m, --maven-central-lookup    Look up package information from Maven Central API
+  --poms                        Download POM files from Maven Central
+  -c, --clone-repos              Clone repositories to find POM files
+
+Dependency Resolution:
+  -r, --resolve-dependencies     Resolve transitive dependencies
+  -d, --max-dependency-depth N   Maximum depth to traverse dependencies (default: 2)
+  -e, --extended-csv FILE        Filename for extended CSV in cache directory
+  --dependencies-output FILE     Filename for dependencies CSV in cache directory
+
+POM Analysis:
+  --leaves                       Extract dependencies from POM files and create leaves.csv
+  --leaves-output FILE           Filename for leaves CSV in cache directory
+
+Help:
+  -h, --help                     Show help message
 ```
 
 ### Example Output

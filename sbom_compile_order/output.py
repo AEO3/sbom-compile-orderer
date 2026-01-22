@@ -69,7 +69,7 @@ def extract_repo_url(url: str) -> str:
             user = match.group(1)
             repo = match.group(2)
             # Remove .git suffix if present, we'll add it back
-            repo = repo.rstrip(".git")
+            repo = repo.removesuffix(".git")
             # Use https for GitHub (more reliable than http)
             scheme = "https" if parsed.scheme in ["http", "https"] else parsed.scheme
             return f"{scheme}://{parsed.netloc}/{user}/{repo}.git"
@@ -82,7 +82,7 @@ def extract_repo_url(url: str) -> str:
         if match:
             user = match.group(1)
             repo = match.group(2)
-            repo = repo.rstrip(".git")
+            repo = repo.removesuffix(".git")
             return f"{parsed.scheme}://{parsed.netloc}/{user}/{repo}.git"
         return ""
 
@@ -93,7 +93,7 @@ def extract_repo_url(url: str) -> str:
         if match:
             user = match.group(1)
             repo = match.group(2)
-            repo = repo.rstrip(".git")
+            repo = repo.removesuffix(".git")
             scheme = "https" if parsed.scheme in ["http", "https"] else parsed.scheme
             return f"{scheme}://{parsed.netloc}/{user}/{repo}.git"
         return ""
@@ -105,12 +105,12 @@ def extract_repo_url(url: str) -> str:
             query_params = parse_qs(parsed.query)
             repo_param = query_params.get("p", [""])[0]
             if repo_param:
-                repo = repo_param.rstrip(".git")
+                repo = repo_param.removesuffix(".git")
                 return f"{parsed.scheme}://{parsed.netloc}/repos/asf/{repo}.git"
         # Pattern: https://git-wip-us.apache.org/repos/asf/repo.git
         match = re.match(r"^/repos/asf/([^/]+)", parsed.path)
         if match:
-            repo = match.group(1).rstrip(".git")
+            repo = match.group(1).removesuffix(".git")
             return f"{parsed.scheme}://{parsed.netloc}/repos/asf/{repo}.git"
         return ""
 

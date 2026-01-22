@@ -85,7 +85,7 @@ class POMDownloader:
         """
         # Remove protocol and .git suffix
         repo_name = repo_url.replace("https://", "").replace("http://", "").replace("git://", "")
-        repo_name = repo_name.rstrip("/").rstrip(".git")
+        repo_name = repo_name.rstrip("/").removesuffix(".git")
 
         # Replace invalid characters with underscores
         repo_name = re.sub(r"[^a-zA-Z0-9._-]", "_", repo_name)
@@ -326,7 +326,7 @@ class POMDownloader:
             match = re.match(r"^/([^/]+)/([^/]+)", parsed.path)
             if match:
                 user = match.group(1)
-                repo = match.group(2).rstrip(".git")
+                repo = match.group(2).removesuffix(".git")
                 for branch in branches:
                     # Root POM
                     urls.append(f"https://raw.githubusercontent.com/{user}/{repo}/{branch}/pom.xml")
@@ -343,7 +343,7 @@ class POMDownloader:
             match = re.match(r"^/([^/]+)/([^/]+)", parsed.path)
             if match:
                 user = match.group(1)
-                repo = match.group(2).rstrip(".git")
+                repo = match.group(2).removesuffix(".git")
                 for branch in branches:
                     urls.append(f"https://{parsed.netloc}/{user}/{repo}/-/raw/{branch}/pom.xml")
                     urls.append(f"https://{parsed.netloc}/{user}/{repo}/-/raw/{branch}/{package_name}/pom.xml")
@@ -353,7 +353,7 @@ class POMDownloader:
             match = re.match(r"^/([^/]+)/([^/]+)", parsed.path)
             if match:
                 user = match.group(1)
-                repo = match.group(2).rstrip(".git")
+                repo = match.group(2).removesuffix(".git")
                 for branch in branches:
                     urls.append(f"https://bitbucket.org/{user}/{repo}/raw/{branch}/pom.xml")
                     urls.append(f"https://bitbucket.org/{user}/{repo}/raw/{branch}/{package_name}/pom.xml")

@@ -498,6 +498,8 @@ def main() -> None:
             package_downloader = PackageDownloader(
                 cache_dir, verbose=args.verbose
             )
+            if not hasattr(package_downloader, "log_file"):
+                package_downloader.log_file = log_file
             log_msg = f"Package downloader initialized: {cache_dir}"
             _log_to_file(log_msg, log_file)
             if args.verbose:
@@ -611,10 +613,34 @@ def main() -> None:
             compile_order_needs_regen = True
             if output_path.exists():
                 cached_sbom_hash = hash_cache.get_cached_sbom_hash()
+                if sbom_hash and cached_sbom_hash:
+                    sbom_match_msg = (
+                        "match"
+                        if sbom_hash == cached_sbom_hash
+                        else "mismatch"
+                    )
+                    log_msg = (
+                        f"SBOM hash found ({sbom_hash}); cached hash {sbom_match_msg}"
+                        f" (cached: {cached_sbom_hash})"
+                    )
+                    _log_to_file(log_msg, log_file)
+                    if args.verbose:
+                        print(log_msg, file=sys.stderr)
                 if sbom_hash and cached_sbom_hash and sbom_hash == cached_sbom_hash:
                     # SBOM unchanged, check if compile-order.csv hash matches
                     compile_order_hash = hash_cache.get_compile_order_hash(output_path)
                     cached_compile_order_hash = hash_cache.get_cached_compile_order_hash()
+                    if compile_order_hash and cached_compile_order_hash:
+                        compile_status = (
+                            "matches" if compile_order_hash == cached_compile_order_hash else "differs"
+                        )
+                        log_msg = (
+                            f"Compile-order hash {compile_status} cached hash "
+                            f"({compile_order_hash} vs {cached_compile_order_hash})"
+                        )
+                        _log_to_file(log_msg, log_file)
+                        if args.verbose:
+                            print(log_msg, file=sys.stderr)
                     if compile_order_hash and cached_compile_order_hash and compile_order_hash == cached_compile_order_hash:
                         log_msg = (
                             f"SBOM and compile-order.csv unchanged (hash match), "
@@ -719,17 +745,17 @@ def main() -> None:
                 parallel_download_thread = None
                 if args.poms or args.pull_package:
                     from sbom_compile_order.parallel_downloader import ParallelDownloader
-                    
-                parallel_downloader = ParallelDownloader(
-                    compile_order_csv_path=compile_order_path,
-                    pom_downloader=pom_downloader if args.poms else None,
-                    artifact_downloader=package_downloader if args.pull_package else None,
-                    artifact_types=package_types if args.pull_package else None,
-                    max_workers=5,  # Configurable parallel downloads
-                    verbose=args.verbose,
-                    log_file=log_file,
-                )
-                    
+
+                    parallel_downloader = ParallelDownloader(
+                        compile_order_csv_path=compile_order_path,
+                        pom_downloader=pom_downloader if args.poms else None,
+                        artifact_downloader=package_downloader if args.pull_package else None,
+                        artifact_types=package_types if args.pull_package else None,
+                        max_workers=5,  # Configurable parallel downloads
+                        verbose=args.verbose,
+                        log_file=log_file,
+                    )
+
                     download_types = []
                     if args.poms:
                         download_types.append("POMs")
@@ -737,7 +763,7 @@ def main() -> None:
                         artifact_labels = [f"{atype.upper()}s" for atype in package_types]
                         download_types.extend(artifact_labels)
                     download_types_str = " and ".join(download_types)
-                    
+
                     log_msg = (
                         f"Starting parallel background downloads ({download_types_str}) "
                         f"while enhanced.csv is being created"
@@ -745,7 +771,7 @@ def main() -> None:
                     _log_to_file(log_msg, log_file)
                     if args.verbose:
                         print(log_msg, file=sys.stderr)
-                    
+
                     # Start background download thread
                     parallel_download_thread = parallel_downloader.start_background_downloads()
                 

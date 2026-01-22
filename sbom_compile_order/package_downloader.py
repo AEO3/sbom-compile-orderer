@@ -77,8 +77,24 @@ class PackageDownloader:
         log_entry = f"{timestamp} {message}"
         if self.verbose:
             print(log_entry, file=sys.stderr)
-        with open(self.log_file, "a", encoding="utf-8") as f:
+        log_path = self._ensure_log_file()
+        with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"{log_entry}\n")
+
+    def _ensure_log_file(self) -> Path:
+        """
+        Ensure the downloader has a log file path and that the file exists.
+
+        Returns:
+            Path to the log file.
+        """
+        if not hasattr(self, "log_file") or not self.log_file:
+            self.log_file = self.cache_dir / "sbom-compile-order.log"
+        self.log_file.parent.mkdir(parents=True, exist_ok=True)
+        if not self.log_file.exists():
+            # touch to ensure the file is present
+            self.log_file.touch()
+        return self.log_file
 
     def _get_maven_central_artifact_url(self, component: Component, artifact_type: str) -> str:
         """

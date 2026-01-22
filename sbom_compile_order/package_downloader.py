@@ -107,7 +107,7 @@ class PackageDownloader:
             req = Request(jar_url)
             req.add_header("User-Agent", "sbom-compile-order/1.4.1")
             with urlopen(req, timeout=30) as response:
-                if response.status == 200:
+                if response.getcode() == 200:
                     jar_content = response.read()
                     # Verify it's a valid JAR (starts with ZIP magic bytes)
                     if len(jar_content) > 4 and jar_content[:4] == b"PK\x03\x04":
@@ -136,7 +136,7 @@ class PackageDownloader:
                         fallback_req = Request(fallback_jar_url)
                         fallback_req.add_header("User-Agent", "sbom-compile-order/1.4.1")
                         with urlopen(fallback_req, timeout=30) as fallback_response:
-                            if fallback_response.status == 200:
+                            if fallback_response.getcode() == 200:
                                 jar_content = fallback_response.read()
                                 if len(jar_content) > 4 and jar_content[:4] == b"PK\x03\x04":
                                     with open(cached_jar, "wb") as f:

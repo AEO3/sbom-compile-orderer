@@ -651,13 +651,22 @@ class POMDownloader:
             req = Request(pom_url)
             req.add_header("User-Agent", "sbom-compile-order/1.4.1")
             with urlopen(req, timeout=10) as response:
-                if response.status == 200:
+                if response.getcode() == 200:
                     return response.read(), False
         except HTTPError as exc:
             if exc.code in [401, 403]:
                 return None, True  # Auth required
-        except (URLError, Exception):  # pylint: disable=broad-exception-caught
-            pass
+            self._log(
+                f"[POM DOWNLOAD] HTTPError in _download_pom_direct (HTTP {exc.code}): {pom_url}"
+            )
+        except URLError as exc:
+            self._log(
+                f"[POM DOWNLOAD] URLError in _download_pom_direct: {exc.reason if hasattr(exc, 'reason') else str(exc)}"
+            )
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            self._log(
+                f"[POM DOWNLOAD] Unexpected error in _download_pom_direct: {type(exc).__name__}: {exc}"
+            )
         return None, False
 
     def download_pom(

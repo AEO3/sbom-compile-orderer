@@ -123,6 +123,41 @@ class PackageDownloader:
         except HTTPError as exc:
             if exc.code in [401, 403]:
                 return None, True  # Auth required
+            if exc.code == 404:
+                # Try fallback URL: https://mvnrepository.com/repos/central
+                self._log(
+                    f"Maven Central JAR not found (HTTP 404), trying fallback repository: "
+                    f"{component.group}:{component.name}:{component.version}"
+                )
+                fallback_jar_url = self._get_fallback_jar_url(component)
+                if fallback_jar_url:
+                    self._log(f"[URL USING TO DOWNLOAD] {fallback_jar_url}")
+                    try:
+                        fallback_req = Request(fallback_jar_url)
+                        fallback_req.add_header("User-Agent", "sbom-compile-order/1.4.1")
+                        with urlopen(fallback_req, timeout=30) as fallback_response:
+                            if fallback_response.status == 200:
+                                jar_content = fallback_response.read()
+                                if len(jar_content) > 4 and jar_content[:4] == b"PK\x03\x04":
+                                    with open(cached_jar, "wb") as f:
+                                        f.write(jar_content)
+                                    self._log(
+                                        f"Cached JAR from fallback repository (mvnrepository.com/repos/central): "
+                                        f"{cached_jar.name}"
+                                    )
+                                    return cached_jar.name, False
+                    except HTTPError as fallback_exc:
+                        if fallback_exc.code in [401, 403]:
+                            return None, True  # Auth required
+                        self._log(
+                            f"Fallback repository also failed (HTTP {fallback_exc.code}): "
+                            f"{component.group}:{component.name}:{component.version}"
+                        )
+                    except Exception as fallback_exc:  # pylint: disable=broad-exception-caught
+                        self._log(
+                            f"Fallback repository download failed: {fallback_exc} "
+                            f"for {component.group}:{component.name}:{component.version}"
+                        )
             if self.verbose:
                 self._log(
                     f"Maven Central JAR download failed (HTTP {exc.code}): "
@@ -135,3 +170,21 @@ class PackageDownloader:
                     f"for {component.group}:{component.name}:{component.version}"
                 )
         return None, False
+
+    def _get_fallback_jar_url(self, component: Component) -> str:
+        """
+        Construct the fallback Maven Central JAR URL using mvnrepository.com/repos/central.
+
+        Args:
+            component: Component object with PURL or coordinates
+
+        Returns:
+            URL string for downloading the JAR from fallback repository
+        """
+        if component.group and component.name and component.version:
+            from sbom_compile_order.parser import build_maven_central_url
+            fallback_base_url = "https://mvnrepository.com/repos/central"
+            return build_maven_central_url(
+                component.group, component.name, component.version, "jar", base_url=fallback_base_url
+            )
+        return ""

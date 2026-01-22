@@ -236,18 +236,20 @@ def extract_package_type(purl: str) -> Optional[str]:
 
 
 def build_maven_central_url(
-    group: str, artifact: str, version: str, file_type: str = "jar"
+    group: str, artifact: str, version: str, file_type: str = "jar", base_url: Optional[str] = None
 ) -> str:
     """
     Build Maven Central URL from Maven coordinates.
 
     URL format: https://repo1.maven.org/maven2/{group_path}/{artifact}/{version}/{artifact}-{version}.{extension}
+    Alternative: https://mvnrepository.com/repos/central/{group_path}/{artifact}/{version}/{artifact}-{version}.{extension}
 
     Args:
         group: Maven group ID
         artifact: Maven artifact ID (will be cleaned if it contains version/extension)
         version: Version string
         file_type: File type (jar, pom, etc.) - defaults to jar
+        base_url: Optional base URL override (defaults to repo1.maven.org/maven2)
 
     Returns:
         Maven Central URL string
@@ -267,7 +269,8 @@ def build_maven_central_url(
         extension = "jar"  # Default to jar
 
     # Build URL: https://repo1.maven.org/maven2/{group_path}/{artifact}/{version}/{artifact}-{version}.{extension}
-    base_url = "https://repo1.maven.org/maven2"
+    if base_url is None:
+        base_url = "https://repo1.maven.org/maven2"
     url = f"{base_url}/{group_path}/{artifact}/{version}/{artifact}-{version}.{extension}"
 
     return url

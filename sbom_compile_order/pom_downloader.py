@@ -360,6 +360,26 @@ class POMDownloader:
 
         return urls
 
+    def _build_fallback_maven_url(self, component: Component, file_type: str) -> Optional[str]:
+        """
+        Build fallback Maven Central URL using mvnrepository.com/repos/central.
+
+        Args:
+            component: Component to build URL for
+            file_type: File type (pom, jar, etc.)
+
+        Returns:
+            Fallback URL string or None if cannot build
+        """
+        if not component.group or not component.name or not component.version:
+            return None
+        
+        from sbom_compile_order.parser import build_maven_central_url
+        fallback_base_url = "https://mvnrepository.com/repos/central"
+        return build_maven_central_url(
+            component.group, component.name, component.version, file_type, base_url=fallback_base_url
+        )
+
     def _download_pom_from_maven_central(
         self, component: Component
     ) -> Tuple[Optional[bytes], bool]:
@@ -550,6 +570,39 @@ class POMDownloader:
                         f"{component.group}:{component.name}:{component.version} "
                         f"(URL: {pom_url})"
                     )
+                    # Try fallback URL: https://mvnrepository.com/repos/central
+                    self._log(
+                        f"[POM DOWNLOAD] Trying fallback repository: mvnrepository.com/repos/central"
+                    )
+                    fallback_pom_url = self._build_fallback_maven_url(component, "pom")
+                    if fallback_pom_url:
+                        self._log(f"[POM DOWNLOAD] Fallback URL: {fallback_pom_url}")
+                        try:
+                            fallback_req = Request(fallback_pom_url)
+                            fallback_req.add_header("User-Agent", "sbom-compile-order/1.4.1")
+                            fallback_req.add_header("Accept", "application/xml, text/xml, */*")
+                            with urlopen(fallback_req, timeout=30, context=ssl_context) as fallback_response:
+                                if fallback_response.getcode() == 200:
+                                    pom_content = fallback_response.read()
+                                    pom_size = len(pom_content)
+                                    if pom_size > 0:
+                                        self._log(
+                                            f"[POM DOWNLOAD] SUCCESS: Downloaded POM from fallback repository "
+                                            f"(mvnrepository.com/repos/central): "
+                                            f"{component.group}:{component.name}:{component.version} "
+                                            f"({pom_size} bytes)"
+                                        )
+                                        return pom_content, False
+                        except HTTPError as fallback_exc:
+                            self._log(
+                                f"[POM DOWNLOAD] ERROR: Fallback repository also failed (HTTP {fallback_exc.code}): "
+                                f"{component.group}:{component.name}:{component.version}"
+                            )
+                        except Exception as fallback_exc:  # pylint: disable=broad-exception-caught
+                            self._log(
+                                f"[POM DOWNLOAD] ERROR: Fallback repository download failed: {fallback_exc} "
+                                f"for {component.group}:{component.name}:{component.version}"
+                            )
                 else:
                     error_details = f"reason: {exc.reason}"
                     if error_body:

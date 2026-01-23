@@ -14,7 +14,7 @@ from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs
 
 from sbom_compile_order.package_metadata import PackageMetadataClient
-from sbom_compile_order.parser import Component
+from sbom_compile_order.parser import Component, extract_package_type
 
 if TYPE_CHECKING:
     import networkx as nx
@@ -545,10 +545,15 @@ class CSVFormatter(OutputFormatter):
                     # Any other error - default to 0
                     dependency_count = 0
 
-            # Download POM file if downloader is available
+            # Determine package type
+            package_type = extract_package_type(purl) if purl else None
+            is_maven = package_type == "maven"
+            is_npm = package_type == "npm"
+
+            # Download POM file if downloader is available (only for Maven packages)
             pom_filename = ""
             auth_required = ""
-            if pom_downloader:
+            if pom_downloader and is_maven:
                 try:
                     # Try downloading from Maven Central first (works without repo_url)
                     pom_result, auth_req = pom_downloader.download_pom(comp, repo_url or "")
@@ -601,8 +606,8 @@ class CSVFormatter(OutputFormatter):
                 except Exception:  # pylint: disable=broad-exception-caught
                     pass
             
-            if comp.group and comp.name and comp.version:
-                # Try dependency resolver first (mvnrepository.com) as it has better data
+            # Try dependency resolver first (mvnrepository.com) - only for Maven packages
+            if is_maven and comp.group and comp.name and comp.version:
                 if dependency_resolver:
                     try:
                         license, homepage = dependency_resolver.get_license_and_homepage(
@@ -633,12 +638,16 @@ class CSVFormatter(OutputFormatter):
                     except Exception:  # pylint: disable=broad-exception-caught
                         pass
 
-                # Fall back to Maven Central if dependency resolver didn't provide data
-                if not homepage_url and metadata_client:
+            # Fall back to metadata client for both Maven and npm packages
+            if not homepage_url and metadata_client and comp.name:
+                # For npm packages, we only need name. For Maven, we need group and name.
+                if is_npm or (is_maven and comp.group):
                     try:
-                        homepage, _ = metadata_client.get_package_info(comp)
+                        homepage, license = metadata_client.get_package_info(comp)
                         if homepage:
                             homepage_url = homepage
+                        if license and not license_type:
+                            license_type = license
                     except Exception:  # pylint: disable=broad-exception-caught
                         pass
 

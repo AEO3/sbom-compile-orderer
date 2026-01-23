@@ -153,6 +153,9 @@ sbom-compile-order my-project.sbom.json --exclude-types application
 # Exclude specific package types (e.g., npm, pypi)
 sbom-compile-order my-project.sbom.json --exclude-package-types npm pypi
 
+# Download npm packages to cache/npm directory
+sbom-compile-order my-project.sbom.json --npm
+
 # Clone repositories to find POM files (instead of Maven Central)
 sbom-compile-order my-project.sbom.json -c
 
@@ -198,6 +201,9 @@ Maven Central Integration:
   --jar                         Download JAR artifacts when pulling packages (implies --pull-package)
   --war                         Download WAR artifacts when pulling packages (implies --pull-package)
   -c, --clone-repos              Clone repositories to find POM files
+
+npm Integration:
+  --npm                         Download npm package tarballs from the npm registry
 
 Dependency Resolution:
   -r, --resolve-dependencies     Resolve transitive dependencies

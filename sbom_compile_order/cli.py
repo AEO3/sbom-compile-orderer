@@ -48,14 +48,15 @@ def _start_parallel_downloads(
     pom_downloader,
     package_downloader,
     package_types: List[str],
-    log_file: Path,
-    verbose: bool,
-    context: str,
+    npm_downloader=None,
+    log_file: Path = None,
+    verbose: bool = False,
+    context: str = "",
 ) -> Optional["threading.Thread"]:
     """
-    Start background downloads for configured POMs and artifacts.
+    Start background downloads for configured POMs, artifacts, and npm packages.
     """
-    if not pom_downloader and not package_downloader:
+    if not pom_downloader and not package_downloader and not npm_downloader:
         return None
 
     from sbom_compile_order.parallel_downloader import ParallelDownloader
@@ -66,6 +67,8 @@ def _start_parallel_downloads(
     if package_downloader and package_types:
         artifact_labels = [f"{atype.upper()}s" for atype in package_types]
         download_types.extend(artifact_labels)
+    if npm_downloader:
+        download_types.append("npm packages")
 
     if not download_types:
         return None
@@ -75,6 +78,7 @@ def _start_parallel_downloads(
         pom_downloader=pom_downloader,
         artifact_downloader=package_downloader,
         artifact_types=package_types,
+        npm_downloader=npm_downloader,
         max_workers=5,
         verbose=verbose,
         log_file=log_file,
@@ -84,7 +88,8 @@ def _start_parallel_downloads(
     log_msg = (
         f"Starting parallel background downloads ({download_types_str}) {context}"
     )
-    _log_to_file(log_msg, log_file)
+    if log_file:
+        _log_to_file(log_msg, log_file)
     if verbose:
         print(log_msg, file=sys.stderr)
 
@@ -216,6 +221,12 @@ def main() -> None:
         "--war",
         action="store_true",
         help="Download WAR artifacts when pulling packages from Maven Central",
+    )
+
+    parser.add_argument(
+        "--npm",
+        action="store_true",
+        help="Download npm package tarballs from the npm registry",
     )
 
     parser.add_argument(
@@ -580,6 +591,21 @@ def main() -> None:
             if args.verbose:
                 print(log_msg, file=sys.stderr)
 
+        # Initialize npm package downloader if requested
+        npm_downloader = None
+        if args.npm:
+            from sbom_compile_order.npm_package_downloader import NpmPackageDownloader
+
+            npm_downloader = NpmPackageDownloader(
+                cache_dir, verbose=args.verbose
+            )
+            if not hasattr(npm_downloader, "log_file"):
+                npm_downloader.log_file = log_file
+            log_msg = f"npm package downloader initialized: {cache_dir}"
+            _log_to_file(log_msg, log_file)
+            if args.verbose:
+                print(log_msg, file=sys.stderr)
+
         # Initialize Maven Central client if requested
         package_metadata_client = None
         if args.maven_central_lookup or args.resolve_dependencies or args.extended_csv:
@@ -822,6 +848,7 @@ def main() -> None:
                     pom_downloader if args.poms else None,
                     package_downloader if args.pull_package else None,
                     package_types if args.pull_package else [],
+                    npm_downloader if args.npm else None,
                     log_file,
                     args.verbose,
                     "while enhanced.csv is being created",
@@ -875,13 +902,36 @@ def main() -> None:
                         if args.verbose:
                             print(log_msg, file=sys.stderr)
 
-        # Start package downloads when Maven lookups are not requested but --pull-package is set
-        if args.pull_package and not args.maven_central_lookup:
+                # Log npm package download summary
+                if npm_downloader:
+                    npm_cache_dir = cache_dir / "npm"
+                    if npm_cache_dir.exists():
+                        npm_files = list(npm_cache_dir.glob("*.tgz"))
+                        npm_count = len(npm_files)
+                        log_msg = (
+                            f"npm package download summary: {npm_count} package(s) cached in "
+                            f"{npm_cache_dir} (out of {len(order)} components processed)"
+                        )
+                        _log_to_file(log_msg, log_file)
+                        if args.verbose:
+                            print(log_msg, file=sys.stderr)
+                    else:
+                        log_msg = (
+                            f"npm package download summary: No npm packages were downloaded "
+                            f"(out of {len(order)} components processed)"
+                        )
+                        _log_to_file(log_msg, log_file)
+                        if args.verbose:
+                            print(log_msg, file=sys.stderr)
+
+        # Start package downloads when Maven lookups are not requested but --pull-package or --npm is set
+        if (args.pull_package or args.npm) and not args.maven_central_lookup:
             package_download_thread = _start_parallel_downloads(
                 output_path,
                 None,
-                package_downloader,
-                package_types,
+                package_downloader if args.pull_package else None,
+                package_types if args.pull_package else [],
+                npm_downloader if args.npm else None,
                 log_file,
                 args.verbose,
                 "after compile-order.csv creation",

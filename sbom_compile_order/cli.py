@@ -137,7 +137,9 @@ def main() -> None:
         "--output",
         type=str,
         default=None,
-        help="Output file path (default: cache/compile-order.csv for CSV format, stdout for other formats)",
+        help="Working directory for all generated files (default: cache). compile-order.csv, "
+        "enhanced.csv, extended CSV, leaves, POMs, and logs go here. For text/json without -o, "
+        "output goes to stdout.",
     )
 
     parser.add_argument(
@@ -236,7 +238,7 @@ def main() -> None:
         "--dependencies-output",
         type=str,
         default=None,
-        help="Filename for dependencies CSV in cache directory (default: dependencies.csv)",
+        help="Filename for dependencies CSV in output directory (default: dependencies.csv)",
     )
 
     parser.add_argument(
@@ -244,7 +246,7 @@ def main() -> None:
         "--extended-csv",
         type=str,
         default=None,
-        help="Filename for extended CSV in cache directory (populated incrementally, can be tailed, default: extended.csv)",
+        help="Filename for extended CSV in output directory (populated incrementally, default: extended-dependencies.csv)",
     )
 
     parser.add_argument(
@@ -265,7 +267,7 @@ def main() -> None:
         "--leaves-output",
         type=str,
         default=None,
-        help="Filename for leaves CSV in cache directory (default: leaves.csv)",
+        help="Filename for leaves CSV in output directory (default: leaves.csv)",
     )
 
     args = parser.parse_args()
@@ -288,8 +290,8 @@ def main() -> None:
                 file=sys.stderr,
             )
 
-    # Set up cache directory in current working directory
-    cache_dir = Path.cwd() / "cache"
+    # Set up output (working) directory: -o/--output or default cache
+    cache_dir = Path(args.output) if args.output else (Path.cwd() / "cache")
     cache_dir.mkdir(parents=True, exist_ok=True)
     log_file = cache_dir / "sbom-compile-order.log"
     
@@ -335,7 +337,7 @@ def main() -> None:
     _log_to_file(log_msg, log_file)
     log_msg = f"Working directory: {Path.cwd()}"
     _log_to_file(log_msg, log_file)
-    log_msg = f"Cache directory: {cache_dir}"
+    log_msg = f"Output directory: {cache_dir}"
     _log_to_file(log_msg, log_file)
     if args.verbose:
         print(f"Log file: {log_file}", file=sys.stderr)
@@ -608,7 +610,7 @@ def main() -> None:
                     filename = user_path.name
                     extended_csv_path = cache_dir / filename
                     log_msg = (
-                        f"Extended CSV filename '{filename}' will be written to cache directory: "
+                        f"Extended CSV filename '{filename}' will be written to output directory: "
                         f"{extended_csv_path}"
                     )
                     _log_to_file(log_msg, log_file)
@@ -646,14 +648,9 @@ def main() -> None:
         
         formatter = get_formatter(args.format)
 
-        # Determine output path - default to cache/compile-order.csv for CSV format
+        # Determine output path - CSV always goes to output dir as compile-order.csv
         if args.format == "csv":
-            if args.output:
-                output_path = Path(args.output)
-            else:
-                # Default output for CSV format
-                output_path = cache_dir / "compile-order.csv"
-            
+            output_path = cache_dir / "compile-order.csv"
             output_path.parent.mkdir(parents=True, exist_ok=True)
             log_msg = f"Writing CSV incrementally to: {output_path}"
             _log_to_file(log_msg, log_file)
@@ -941,9 +938,10 @@ def main() -> None:
                 dependency_resolver,
             )
 
-            # Write output
+            # Write output: to output directory if -o set, else stdout
             if args.output:
-                output_path = Path(args.output)
+                ext = "txt" if args.format == "text" else "json"
+                output_path = cache_dir / f"compile-order.{ext}"
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 log_msg = f"Writing {args.format} output to: {output_path}"
                 _log_to_file(log_msg, log_file)
@@ -963,15 +961,7 @@ def main() -> None:
         # Resolve dependencies and create extended CSV if requested
         # This happens AFTER compile-order.csv is created
         if args.resolve_dependencies and dependency_resolver:
-            # Determine compile-order.csv path
-            if args.format == "csv":
-                if args.output:
-                    compile_order_path = Path(args.output)
-                else:
-                    compile_order_path = cache_dir / "compile-order.csv"
-            else:
-                # If not CSV format, use default compile-order.csv in cache
-                compile_order_path = cache_dir / "compile-order.csv"
+            compile_order_path = cache_dir / "compile-order.csv"
 
             # Ensure compile-order.csv exists before processing extended CSV
             if compile_order_path.exists():
@@ -1009,15 +999,7 @@ def main() -> None:
 
         # Process leaves extraction if requested
         if args.leaves:
-            # Determine compile-order.csv path
-            if args.format == "csv":
-                if args.output:
-                    compile_order_path = Path(args.output)
-                else:
-                    compile_order_path = cache_dir / "compile-order.csv"
-            else:
-                # If not CSV format, use default compile-order.csv in cache
-                compile_order_path = cache_dir / "compile-order.csv"
+            compile_order_path = cache_dir / "compile-order.csv"
 
             # Determine leaves.csv path
             leaves_csv_path = None

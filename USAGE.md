@@ -24,8 +24,8 @@ python3 -m sbom_compile_order.cli <sbom-file.json>
 # Output compilation order to stdout (text format)
 sbom-compile-order example_sbom.json
 
-# Output to file in JSON format
-sbom-compile-order example_sbom.json -o compile-order.json -f json
+# Use output directory for JSON (writes compile-order.json there)
+sbom-compile-order example_sbom.json -o out -f json
 
 # Verbose output with metadata
 sbom-compile-order example_sbom.json -v --include-metadata
@@ -117,7 +117,7 @@ The CSV format is particularly useful for:
 ## Command-Line Options
 
 - `sbom_file`: Path to the CycloneDX SBOM JSON file (required)
-- `-o, --output FILE`: Output file path (default: stdout)
+- `-o, --output DIR`: Working directory for generated files (default: cache). For text/json without -o, stdout.
 - `-f, --format FORMAT`: Output format: `text`, `json`, or `csv` (default: `text`)
 - `-v, --verbose`: Enable verbose output showing progress
 - `--include-metadata`: Include full component metadata in output

@@ -100,11 +100,11 @@ pip install dist/sbom_compile_order-1.0.0-py3-none-any.whl
 # Basic usage - output compilation order to CSV (default format)
 sbom-compile-order example_sbom.json
 
-# Output to file in JSON format
-sbom-compile-order example_sbom.json -o compile-order.json -f json
+# Use a different output directory (writes compile-order.json there)
+sbom-compile-order example_sbom.json -o out -f json
 
-# Output to CSV file with source URLs
-sbom-compile-order example_sbom.json -o compile-order.csv -f csv
+# Use output directory for CSV (writes compile-order.csv, enhanced.csv, poms, etc. there)
+sbom-compile-order example_sbom.json -o out -f csv
 
 # Verbose output with full metadata
 sbom-compile-order example_sbom.json -v --include-metadata
@@ -115,14 +115,14 @@ sbom-compile-order example_sbom.json -v --include-metadata
 ### Basic Examples
 
 ```bash
-# Generate CSV compilation order (saved to cache/compile-order.csv)
+# Generate CSV compilation order (saved to cache/compile-order.csv by default)
 sbom-compile-order my-project.sbom.json
 
 # Generate JSON output to stdout
 sbom-compile-order my-project.sbom.json -f json
 
-# Generate text output to a file
-sbom-compile-order my-project.sbom.json -f text -o compile-order.txt
+# Generate text output to a file (in output directory out/)
+sbom-compile-order my-project.sbom.json -f text -o out
 
 # Verbose mode to see detailed processing information
 sbom-compile-order my-project.sbom.json -v
@@ -161,7 +161,7 @@ sbom-compile-order my-project.sbom.json --poms -r -v --max-dependency-depth 2
 
 ### Output Files
 
-The tool creates several output files in the `cache/` directory:
+The tool creates several output files in the output directory (default: `cache/`; override with `-o`):
 
 - **compile-order.csv**: Base compilation order (created by default)
 - **enhanced.csv**: Enhanced CSV with Maven Central lookups and POM downloads (created with `-m` or `--poms`)
@@ -180,7 +180,7 @@ Arguments:
   sbom_file                 Path to the CycloneDX SBOM JSON file (required)
 
 Output Options:
-  -o, --output FILE         Output file path (default: cache/compile-order.csv for CSV, stdout for other formats)
+  -o, --output DIR          Working directory for all generated files (default: cache). For text/json without -o, stdout.
   -f, --format FORMAT       Output format: text, json, or csv (default: csv)
   -v, --verbose             Enable verbose output
   -i, --include-metadata     Include component metadata in output
@@ -201,12 +201,12 @@ Maven Central Integration:
 Dependency Resolution:
   -r, --resolve-dependencies     Resolve transitive dependencies
   -d, --max-dependency-depth N   Maximum depth to traverse dependencies (default: 2)
-  -e, --extended-csv FILE        Filename for extended CSV in cache directory
-  --dependencies-output FILE     Filename for dependencies CSV in cache directory
+  -e, --extended-csv FILE        Filename for extended CSV in output directory
+  --dependencies-output FILE     Filename for dependencies CSV in output directory
 
 POM Analysis:
   --leaves                       Extract dependencies from POM files and create leaves.csv
-  --leaves-output FILE           Filename for leaves CSV in cache directory
+  --leaves-output FILE           Filename for leaves CSV in output directory
 
 Help:
   -h, --help                     Show help message

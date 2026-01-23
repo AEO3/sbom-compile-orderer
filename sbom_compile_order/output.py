@@ -9,6 +9,10 @@ import io
 import json
 import os
 import re
+import sys
+
+# Allow CSV fields larger than default 128KB (e.g. long PURLs, dependency lists in SBOMs)
+csv.field_size_limit(sys.maxsize)
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs

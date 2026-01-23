@@ -9,6 +9,9 @@ import csv
 import re
 import sys
 import time
+
+# Allow CSV fields larger than default 128KB (e.g. long PURLs, dependency lists in SBOMs)
+csv.field_size_limit(sys.maxsize)
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple

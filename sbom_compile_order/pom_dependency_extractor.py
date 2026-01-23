@@ -20,6 +20,9 @@ from typing import Dict, List, Optional, Set, Tuple
 from sbom_compile_order.parser import Component
 from sbom_compile_order.pom_downloader import POMDownloader
 
+# Allow CSV fields larger than default 128KB (e.g. long PURLs, dependency lists in SBOMs)
+csv.field_size_limit(sys.maxsize)
+
 
 class POMDependency:
     """Represents a dependency extracted from a POM file."""

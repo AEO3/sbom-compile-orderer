@@ -13,6 +13,9 @@ from typing import Optional
 from sbom_compile_order.parser import Component, build_maven_central_url_from_purl
 from sbom_compile_order.output import extract_repo_url
 
+# Allow CSV fields larger than default 128KB (e.g. long PURLs, dependency lists in SBOMs)
+csv.field_size_limit(sys.maxsize)
+
 
 def _extract_scm_url_from_pom(pom_content: str) -> str:
     """

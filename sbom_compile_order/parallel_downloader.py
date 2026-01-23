@@ -7,6 +7,9 @@ Downloads files in parallel using threading while enhanced.csv is being created.
 import csv
 import sys
 import threading
+
+# Allow CSV fields larger than default 128KB (e.g. long PURLs, dependency lists in SBOMs)
+csv.field_size_limit(sys.maxsize)
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from queue import Queue

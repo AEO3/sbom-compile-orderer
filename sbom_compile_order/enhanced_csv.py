@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from sbom_compile_order.package_metadata import PackageMetadataClient
 from sbom_compile_order.parser import Component, build_maven_central_url_from_purl
 from sbom_compile_order.output import extract_repo_url
 
@@ -78,14 +79,14 @@ def _log_to_file(message: str, log_file: Path) -> None:
 def create_enhanced_csv(
     compile_order_csv_path: Path,
     enhanced_csv_path: Path,
-    maven_central_client,
+    metadata_client: Optional[PackageMetadataClient],
     pom_downloader=None,
     verbose: bool = False,
     log_file: Optional[Path] = None,
     hash_cache=None,
 ) -> None:
     """
-    Read compile-order.csv and create enhanced.csv with Maven Central data and POM downloads.
+    Read compile-order.csv and create enhanced.csv with additional metadata and optional POM downloads.
 
     Supports incremental updates: if compile-order.csv is unchanged and enhanced.csv exists,
     only updates rows where POM/JAR download status might have changed.
@@ -93,7 +94,7 @@ def create_enhanced_csv(
     Args:
         compile_order_csv_path: Path to the compile-order.csv file
         enhanced_csv_path: Path where enhanced.csv will be written
-        maven_central_client: MavenCentralClient instance for lookups
+        metadata_client: PackageMetadataClient instance for lookups
         pom_downloader: Optional POMDownloader instance for downloading POM files
         verbose: Whether to print verbose output
         log_file: Optional path to log file for logging actions
@@ -260,9 +261,9 @@ def create_enhanced_csv(
                     f"(incremental update mode)"
                 )
                 _log_to_file(log_msg, log_file)
-        elif maven_central_client and comp.group and comp.name:
+        elif metadata_client and comp.group and comp.name:
             try:
-                homepage, license = maven_central_client.get_package_info(comp)
+                homepage, license = metadata_client.get_package_info(comp)
                 if homepage:
                     homepage_url = homepage
                     log_msg = f"Found homepage for {group}:{artifact}:{version}: {homepage_url}"

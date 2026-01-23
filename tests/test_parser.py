@@ -28,24 +28,31 @@ def test_clean_artifact_name_falls_back_when_no_version_match() -> None:
 
 
 def test_parse_purl_extracts_maven_coordinates() -> None:
-    group, artifact, version, file_type = parse_purl(
+    group, artifact, version, purl_type = parse_purl(
         "pkg:maven/org.example/flogger@0.7.1?type=pom"
     )
     assert group == "org.example"
     assert artifact == "flogger"
     assert version == "0.7.1"
-    assert file_type == "pom"
+    assert purl_type == "maven"
 
 
 @pytest.mark.parametrize(
     ("purl", "expected"),
     [
         ("", (None, None, None, None)),
-        ("pkg:npm/@scope/package", (None, None, None, None)),
     ],
 )
 def test_parse_purl_returns_none_for_invalid(purl: str, expected: tuple) -> None:
     assert parse_purl(purl) == expected
+
+
+def test_parse_purl_handles_scoped_npm_packages() -> None:
+    group, artifact, version, purl_type = parse_purl("pkg:npm/%40scope/package@1.2.3")
+    assert group is None
+    assert artifact == "@scope/package"
+    assert version == "1.2.3"
+    assert purl_type == "npm"
 
 
 def test_extract_package_type_parses_pkg_scheme() -> None:

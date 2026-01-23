@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs
 
+from sbom_compile_order.package_metadata import PackageMetadataClient
 from sbom_compile_order.parser import Component
 
 if TYPE_CHECKING:
@@ -329,7 +330,7 @@ class CSVFormatter(OutputFormatter):
         include_metadata: bool = False,
         graph: Optional["nx.DiGraph"] = None,
         pom_downloader: Optional[object] = None,
-        maven_central_client: Optional[object] = None,
+        metadata_client: Optional[PackageMetadataClient] = None,
         dependency_resolver: Optional[object] = None,
     ) -> str:
         """
@@ -346,7 +347,7 @@ class CSVFormatter(OutputFormatter):
             include_metadata: Whether to include component metadata (not used in CSV)
             graph: Optional dependency graph for counting dependencies
             pom_downloader: Optional POM downloader instance
-            maven_central_client: Optional Maven Central API client
+            metadata_client: Optional package metadata client
             dependency_resolver: Optional dependency resolver for fetching metadata
 
         Returns:
@@ -381,7 +382,7 @@ class CSVFormatter(OutputFormatter):
                 components,
                 graph,
                 pom_downloader,
-                maven_central_client,
+                metadata_client,
                 dependency_resolver,
             )
             writer.writerow(row)
@@ -398,7 +399,7 @@ class CSVFormatter(OutputFormatter):
         include_metadata: bool = False,
         graph: Optional["nx.DiGraph"] = None,
         pom_downloader: Optional[object] = None,
-        maven_central_client: Optional[object] = None,
+        metadata_client: Optional[PackageMetadataClient] = None,
         dependency_resolver: Optional[object] = None,
     ) -> None:
         """
@@ -420,7 +421,7 @@ class CSVFormatter(OutputFormatter):
             include_metadata: Whether to include component metadata (not used in CSV)
             graph: Optional dependency graph for counting dependencies
             pom_downloader: Optional POM downloader instance
-            maven_central_client: Optional Maven Central API client
+            metadata_client: Optional package metadata client
             dependency_resolver: Optional dependency resolver for fetching metadata
         """
         # Always overwrite existing file to ensure it matches the SBOM exactly
@@ -459,7 +460,7 @@ class CSVFormatter(OutputFormatter):
                     components,
                     graph,
                     pom_downloader,
-                    maven_central_client,
+                    metadata_client,
                     dependency_resolver,
                     has_circular,
                 )
@@ -474,7 +475,7 @@ class CSVFormatter(OutputFormatter):
         components: Dict[str, Component],
         graph: Optional["nx.DiGraph"],
         pom_downloader: Optional[object],
-        maven_central_client: Optional[object] = None,
+        metadata_client: Optional[PackageMetadataClient] = None,
         dependency_resolver: Optional[object] = None,
         has_circular: bool = False,
     ) -> List:
@@ -487,7 +488,7 @@ class CSVFormatter(OutputFormatter):
             components: Dictionary of all components
             graph: Optional dependency graph
             pom_downloader: Optional POM downloader instance
-            maven_central_client: Optional Maven Central API client
+            metadata_client: Optional package metadata client
             dependency_resolver: Optional dependency resolver for fetching metadata
 
         Returns:
@@ -633,9 +634,9 @@ class CSVFormatter(OutputFormatter):
                         pass
 
                 # Fall back to Maven Central if dependency resolver didn't provide data
-                if not homepage_url and maven_central_client:
+                if not homepage_url and metadata_client:
                     try:
-                        homepage, _ = maven_central_client.get_package_info(comp)
+                        homepage, _ = metadata_client.get_package_info(comp)
                         if homepage:
                             homepage_url = homepage
                     except Exception:  # pylint: disable=broad-exception-caught

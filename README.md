@@ -11,6 +11,7 @@ A Python application that analyses CycloneDX SBOM (Software Bill of Materials) f
 - ✅ **Circular Dependency Detection**: Identifies and handles circular dependencies gracefully
 - ✅ **Multiple Output Formats**: Supports human-readable text, machine-readable JSON, and CSV output
 - ✅ **Component Metadata**: Optional inclusion of full component metadata in output
+- ✅ **npm Registry Metadata**: Resolve homepage and license info for npm packages when metadata lookups are enabled
 
 ## Installation
 

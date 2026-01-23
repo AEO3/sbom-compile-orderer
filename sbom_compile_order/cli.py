@@ -13,8 +13,8 @@ from typing import List, Optional
 from sbom_compile_order.dependency_resolver import DependencyResolver
 from sbom_compile_order.graph import DependencyGraph
 from sbom_compile_order.hash_cache import HashCache
-from sbom_compile_order.maven_central import MavenCentralClient
 from sbom_compile_order.output import get_formatter, write_dependencies_csv
+from sbom_compile_order.package_metadata import PackageMetadataClient
 from sbom_compile_order.parser import Component, SBOMParser, extract_package_type
 from sbom_compile_order.pom_downloader import POMDownloader
 from sbom_compile_order.pom_dependency_extractor import POMDependencyExtractor
@@ -581,10 +581,10 @@ def main() -> None:
                 print(log_msg, file=sys.stderr)
 
         # Initialize Maven Central client if requested
-        maven_central_client = None
+        package_metadata_client = None
         if args.maven_central_lookup or args.resolve_dependencies or args.extended_csv:
-            maven_central_client = MavenCentralClient(verbose=args.verbose)
-            log_msg = "Maven Central API client initialized"
+            package_metadata_client = PackageMetadataClient(verbose=args.verbose)
+            log_msg = "Package metadata client initialized"
             _log_to_file(log_msg, log_file)
             if args.verbose:
                 print(log_msg, file=sys.stderr)
@@ -741,9 +741,9 @@ def main() -> None:
 
             # Create compile-order.csv WITHOUT Maven Central lookups or POM downloads
             # This file is written once and never modified again
-            # Pass None for pom_downloader, maven_central_client and dependency_resolver to skip lookups
+            # Pass None for pom_downloader, package metadata client and dependency_resolver to skip lookups
             if compile_order_needs_regen:
-                log_msg = "Creating compile-order.csv (base file, no Maven Central lookups, no POM downloads)"
+                log_msg = "Creating compile-order.csv (base file, no metadata lookups, no POM downloads)"
                 _log_to_file(log_msg, log_file)
                 if args.verbose:
                     print(log_msg, file=sys.stderr)
@@ -757,7 +757,7 @@ def main() -> None:
                     args.include_metadata,
                     graph.graph,
                     None,  # No POM downloads for compile-order.csv - all enhanced data goes to enhanced.csv
-                    None,  # No Maven Central lookups for compile-order.csv
+                    None,  # No metadata lookups for compile-order.csv
                     None,  # No dependency resolver for compile-order.csv
                 )
                 
@@ -779,7 +779,7 @@ def main() -> None:
             # Create enhanced CSV if Maven Central lookup is requested
             # This reads from compile-order.csv and writes incrementally to enhanced.csv
             # All enhanced data (Maven Central lookups, POM downloads) goes here, NOT in compile-order.csv
-            if args.maven_central_lookup and maven_central_client:
+            if args.maven_central_lookup and package_metadata_client:
                 from sbom_compile_order.enhanced_csv import create_enhanced_csv
 
                 # Determine compile-order.csv path (same as output_path)
@@ -834,7 +834,7 @@ def main() -> None:
                 create_enhanced_csv(
                     compile_order_path,
                     enhanced_csv_path,
-                    maven_central_client,
+                    package_metadata_client,
                     pom_downloader=pom_downloader,  # POM downloads happen in enhanced.csv
                     verbose=args.verbose,
                     log_file=log_file,
@@ -937,7 +937,7 @@ def main() -> None:
                 args.include_metadata,
                 graph.graph if args.format == "csv" else None,
                 pom_downloader,
-                maven_central_client,
+                package_metadata_client,
                 dependency_resolver,
             )
 

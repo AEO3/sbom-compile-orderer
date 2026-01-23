@@ -3,11 +3,14 @@ Hash-based caching for SBOM and CSV files.
 
 Provides functionality to calculate and store MD5 hashes of SBOM files,
 compile-order.csv, and enhanced.csv to enable intelligent caching.
+Also stores filter options (ignore-group-ids, exclude-types, exclude-package-types)
+so compile-order is regenerated when filters change.
 """
 
 import hashlib
+import json
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 
 def calculate_file_hash(file_path: Path) -> Optional[str]:
@@ -89,6 +92,7 @@ class HashCache:
         self.sbom_hash_file = self.cache_dir / "sbom.md5"
         self.compile_order_hash_file = self.cache_dir / "compile-order.csv.md5"
         self.enhanced_hash_file = self.cache_dir / "enhanced.csv.md5"
+        self.compile_order_filters_file = self.cache_dir / "compile-order.filters.json"
 
     def get_sbom_hash(self, sbom_path: Path) -> Optional[str]:
         """
@@ -176,6 +180,61 @@ class HashCache:
             True if successful, False otherwise
         """
         return write_hash_to_file(self.compile_order_hash_file, hash_value)
+
+    def get_cached_compile_order_filter_config(self) -> Optional[str]:
+        """
+        Get cached filter config used when compile-order.csv was last written.
+
+        Used to force regenerate when --ignore-group-ids, --exclude-types, or
+        --exclude-package-types change.
+
+        Returns:
+            JSON string of [ignore_group_ids, exclude_types, exclude_package_types],
+            or None if not found
+        """
+        if not self.compile_order_filters_file.exists():
+            return None
+        try:
+            with open(
+                self.compile_order_filters_file, "r", encoding="utf-8"
+            ) as f:
+                return f.read().strip()
+        except Exception:  # pylint: disable=broad-exception-caught
+            return None
+
+    def save_compile_order_filter_config(
+        self,
+        ignore_group_ids: Optional[List[str]],
+        exclude_types: Optional[List[str]],
+        exclude_package_types: Optional[List[str]],
+    ) -> bool:
+        """
+        Save filter options used when writing compile-order.csv.
+
+        Args:
+            ignore_group_ids: --ignore-group-ids values
+            exclude_types: --exclude-types values
+            exclude_package_types: --exclude-package-types values
+
+        Returns:
+            True if successful
+        """
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            config = json.dumps(
+                [
+                    sorted(ignore_group_ids or []),
+                    sorted(exclude_types or []),
+                    sorted(exclude_package_types or []),
+                ]
+            )
+            with open(
+                self.compile_order_filters_file, "w", encoding="utf-8"
+            ) as f:
+                f.write(config)
+            return True
+        except Exception:  # pylint: disable=broad-exception-caught
+            return False
 
     def save_enhanced_hash(self, hash_value: str) -> bool:
         """

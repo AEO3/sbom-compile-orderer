@@ -714,14 +714,38 @@ def main() -> None:
                         if args.verbose:
                             print(log_msg, file=sys.stderr)
                     if compile_order_hash and cached_compile_order_hash and compile_order_hash == cached_compile_order_hash:
-                        log_msg = (
-                            f"SBOM and compile-order.csv unchanged (hash match), "
-                            f"skipping compile-order.csv regeneration"
+                        # Also require filter options (ignore-group-ids, exclude-types,
+                        # exclude-package-types) to match; else downstream reads of
+                        # compile-order.csv would use stale unfiltered data
+                        _filter_config = json.dumps(
+                            [
+                                sorted(args.ignore_group_ids or []),
+                                sorted(args.exclude_types or []),
+                                sorted(args.exclude_package_types or []),
+                            ]
                         )
-                        _log_to_file(log_msg, log_file)
-                        if args.verbose:
-                            print(log_msg, file=sys.stderr)
-                        compile_order_needs_regen = False
+                        _cached_filters = hash_cache.get_cached_compile_order_filter_config()
+                        _filters_match = (
+                            _cached_filters is not None and _cached_filters == _filter_config
+                        )
+                        if _filters_match:
+                            log_msg = (
+                                f"SBOM and compile-order.csv unchanged (hash match), "
+                                f"skipping compile-order.csv regeneration"
+                            )
+                            _log_to_file(log_msg, log_file)
+                            if args.verbose:
+                                print(log_msg, file=sys.stderr)
+                            compile_order_needs_regen = False
+                        else:
+                            log_msg = (
+                                "Filter config (--ignore-group-ids, --exclude-types, "
+                                "--exclude-package-types) not cached or changed; "
+                                "regenerating compile-order.csv"
+                            )
+                            _log_to_file(log_msg, log_file)
+                            if args.verbose:
+                                print(log_msg, file=sys.stderr)
                     else:
                         log_msg = (
                             f"SBOM unchanged but compile-order.csv changed, "
@@ -758,11 +782,17 @@ def main() -> None:
                     None,  # No dependency resolver for compile-order.csv
                 )
                 
-                # Save compile-order.csv hash
+                # Save compile-order.csv hash and filter config (so skip-regen respects
+                # --ignore-group-ids, --exclude-types, --exclude-package-types)
                 compile_order_hash = hash_cache.get_compile_order_hash(output_path)
                 if compile_order_hash:
                     hash_cache.save_compile_order_hash(compile_order_hash)
-                
+                hash_cache.save_compile_order_filter_config(
+                    args.ignore_group_ids,
+                    args.exclude_types,
+                    args.exclude_package_types,
+                )
+
                 log_msg = f"compile-order.csv written successfully: {output_path} ({len(order)} rows) - file is now static"
                 _log_to_file(log_msg, log_file)
                 if args.verbose:

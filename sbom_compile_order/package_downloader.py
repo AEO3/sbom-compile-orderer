@@ -40,7 +40,9 @@ class PackageDownloader:
         if use_maven is None:
             self.use_maven = self._check_maven_available()
             if self.use_maven:
-                self._log("[MAVEN] Maven detected, will use Maven for JAR downloads when available")
+                self._log(
+                    "[MAVEN] Maven detected, will use Maven for JAR/WAR downloads when available"
+                )
         else:
             self.use_maven = use_maven
         
@@ -176,7 +178,7 @@ class PackageDownloader:
         self._log(f"Downloading {artifact_label} from Maven Central: {artifact_url}")
 
         try:
-            req = Request(jar_url)
+            req = Request(artifact_url)
             req.add_header("User-Agent", "sbom-compile-order/1.4.1")
             with urlopen(req, timeout=30) as response:
                 if response.getcode() == 200:

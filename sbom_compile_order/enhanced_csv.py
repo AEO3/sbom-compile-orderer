@@ -1,5 +1,5 @@
 """
-Enhanced CSV generator that reads compile-order.csv and enhances it with Maven Central data.
+Enhanced CSV generator that reads compile-order.csv and enhances it with package metadata.
 """
 
 import csv
@@ -10,11 +10,77 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from sbom_compile_order.parser import Component, build_maven_central_url_from_purl
+from sbom_compile_order.package_metadata import PackageMetadataClient
+from sbom_compile_order.parser import Component, build_maven_central_url_from_purl, extract_package_type
 from sbom_compile_order.output import extract_repo_url
 
 # Allow CSV fields larger than default 128KB (e.g. long PURLs, dependency lists in SBOMs)
 csv.field_size_limit(sys.maxsize)
+
+
+def _normalize_npm_repo_url(url: str) -> str:
+    """
+    Normalize npm repository URL by removing git+ prefixes and converting to https://.
+
+    Handles formats like:
+    - git+https://github.com/user/repo.git -> https://github.com/user/repo.git
+    - git+ssh://git@github.com/user/repo.git -> https://github.com/user/repo.git
+    - git://github.com/user/repo.git -> https://github.com/user/repo.git
+    - https://github.com/user/repo.git -> https://github.com/user/repo.git (unchanged)
+
+    Args:
+        url: Repository URL that may have git+ prefix
+
+    Returns:
+        Normalized URL starting with https://, or empty string if invalid
+    """
+    if not url:
+        return ""
+
+    url = url.strip()
+
+    # Remove git+ prefix if present
+    if url.startswith("git+"):
+        url = url[4:]
+
+    # Handle git:// protocol
+    if url.startswith("git://"):
+        url = url.replace("git://", "https://", 1)
+
+    # Handle git@ssh format: git@github.com:user/repo.git -> https://github.com/user/repo.git
+    if url.startswith("git@") or url.startswith("ssh://git@"):
+        # Remove ssh:// prefix if present
+        if url.startswith("ssh://"):
+            url = url[6:]
+        # Remove git@ prefix
+        if url.startswith("git@"):
+            url = url[4:]
+        # Replace : with / after domain (git@github.com:user/repo -> github.com/user/repo)
+        if ":" in url:
+            parts = url.split(":", 1)
+            if len(parts) == 2:
+                domain = parts[0]
+                path = parts[1]
+                url = f"{domain}/{path}"
+        url = f"https://{url}"
+
+    # Ensure it starts with https://
+    if not url.startswith("http://") and not url.startswith("https://"):
+        # If it looks like a domain, add https://
+        if "/" in url or "." in url:
+            url = f"https://{url}"
+
+    # Remove .git suffix if present (we'll add it back if needed for git clone)
+    if url.endswith(".git"):
+        url = url[:-4]
+
+    # Add .git back for git clone compatibility
+    if url and not url.endswith(".git"):
+        # Only add .git if it looks like a git repository URL
+        if any(host in url.lower() for host in ["github.com", "gitlab.com", "bitbucket.org", "git"]):
+            url = f"{url}.git"
+
+    return url
 
 
 def _extract_scm_url_from_pom(pom_content: str) -> str:
@@ -60,9 +126,6 @@ def _log_to_file(message: str, log_file: Path) -> None:
         message: Message to log
         log_file: Path to log file
     """
-    import os
-    import sys
-    
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_message = f"[{timestamp}] {message}"
     try:
@@ -81,14 +144,14 @@ def _log_to_file(message: str, log_file: Path) -> None:
 def create_enhanced_csv(
     compile_order_csv_path: Path,
     enhanced_csv_path: Path,
-    maven_central_client,
+    metadata_client: Optional[PackageMetadataClient],
     pom_downloader=None,
     verbose: bool = False,
     log_file: Optional[Path] = None,
     hash_cache=None,
 ) -> None:
     """
-    Read compile-order.csv and create enhanced.csv with Maven Central data and POM downloads.
+    Read compile-order.csv and create enhanced.csv with additional metadata and optional POM downloads.
 
     Supports incremental updates: if compile-order.csv is unchanged and enhanced.csv exists,
     only updates rows where POM/JAR download status might have changed.
@@ -96,7 +159,7 @@ def create_enhanced_csv(
     Args:
         compile_order_csv_path: Path to the compile-order.csv file
         enhanced_csv_path: Path where enhanced.csv will be written
-        maven_central_client: MavenCentralClient instance for lookups
+        metadata_client: PackageMetadataClient instance for lookups
         pom_downloader: Optional POMDownloader instance for downloading POM files
         verbose: Whether to print verbose output
         log_file: Optional path to log file for logging actions
@@ -212,7 +275,7 @@ def create_enhanced_csv(
         # Parse row data
         # Columns: Order, Group ID, Package Name, Version/Tag, PURL, Ref, Type, Scope,
         #          Provided URL, Repo URL, Dependencies, POM, AUTH, Homepage URL,
-        #          License Type, External Dependency Count
+        #          License Type, External Dependency Count, Cyclical Dependencies
         order_num = row[0]
         group_id_col = row[1]  # Format: "group:artifact" or just "group"
         package_name = row[2]
@@ -241,16 +304,23 @@ def create_enhanced_csv(
                 group = group_id_col
                 artifact = package_name
 
-        # Create a Component object for Maven Central lookup
+        # Create a Component object for metadata lookup
+        # Get PURL from row if available (column 4)
+        purl = row[4] if len(row) > 4 else ""
+        package_type = extract_package_type(purl) if purl else None
+        
         component_data = {
             "bom-ref": f"{group}:{artifact}:{version}" if group else f"{artifact}:{version}",
             "group": group,
             "name": artifact,
             "version": version,
+            "purl": purl,
         }
         comp = Component(component_data)
+        is_maven = package_type == "maven"
+        is_npm = package_type == "npm"
 
-        # Lookup Maven Central data (skip if using existing data to avoid unnecessary API calls)
+        # Lookup package metadata (skip if using existing data to avoid unnecessary API calls)
         homepage_url = ""
         license_type = ""
         if use_existing_data and existing_row_data and len(existing_row_data) > 13:
@@ -258,39 +328,114 @@ def create_enhanced_csv(
             homepage_url = existing_row_data[13] if len(existing_row_data) > 13 else ""
             license_type = existing_row_data[14] if len(existing_row_data) > 14 else ""
             if verbose and (homepage_url or license_type):
+                package_id = f"{group}:{artifact}:{version}" if group else f"{artifact}:{version}"
                 log_msg = (
-                    f"Using existing Maven Central data for {group}:{artifact}:{version} "
+                    f"Using existing metadata for {package_id} "
                     f"(incremental update mode)"
                 )
                 _log_to_file(log_msg, log_file)
-        elif maven_central_client and comp.group and comp.name:
-            try:
-                homepage, license = maven_central_client.get_package_info(comp)
-                if homepage:
-                    homepage_url = homepage
-                    log_msg = f"Found homepage for {group}:{artifact}:{version}: {homepage_url}"
+        elif metadata_client and comp.name:
+            # For npm packages, we only need name. For Maven, we need group and name.
+            if is_npm or (is_maven and comp.group):
+                try:
+                    homepage, license = metadata_client.get_package_info(comp)
+                    if homepage:
+                        homepage_url = homepage
+                        package_id = f"{group}:{artifact}:{version}" if group else f"{artifact}:{version}"
+                        log_msg = f"Found homepage for {package_id}: {homepage_url}"
+                        _log_to_file(log_msg, log_file)
+                    if license:
+                        license_type = license
+                        package_id = f"{group}:{artifact}:{version}" if group else f"{artifact}:{version}"
+                        log_msg = f"Found license for {package_id}: {license_type}"
+                        _log_to_file(log_msg, log_file)
+                    
+                    # For npm packages, extract comprehensive data
+                    if is_npm:
+                        try:
+                            npm_data = metadata_client.get_comprehensive_npm_data(comp)
+                            if npm_data:
+                                package_id = f"{artifact}:{version}"
+                                
+                                # Log additional npm metadata
+                                if npm_data.get("description"):
+                                    log_msg = f"[npm] Description for {package_id}: {npm_data.get('description')[:100]}"
+                                    _log_to_file(log_msg, log_file)
+                                
+                                if npm_data.get("author"):
+                                    author_info = npm_data.get("author")
+                                    if isinstance(author_info, dict):
+                                        author_str = author_info.get("name", "")
+                                        if author_info.get("email"):
+                                            author_str += f" <{author_info.get('email')}>"
+                                    else:
+                                        author_str = str(author_info)
+                                    if author_str:
+                                        log_msg = f"[npm] Author for {package_id}: {author_str}"
+                                        _log_to_file(log_msg, log_file)
+                                
+                                # Log dependency counts
+                                deps_count = len(npm_data.get("dependencies", {}))
+                                dev_deps_count = len(npm_data.get("devDependencies", {}))
+                                peer_deps_count = len(npm_data.get("peerDependencies", {}))
+                                optional_deps_count = len(npm_data.get("optionalDependencies", {}))
+                                
+                                if deps_count > 0 or dev_deps_count > 0 or peer_deps_count > 0 or optional_deps_count > 0:
+                                    log_msg = (
+                                        f"[npm] Dependencies for {package_id}: "
+                                        f"{deps_count} runtime, {dev_deps_count} dev, "
+                                        f"{peer_deps_count} peer, {optional_deps_count} optional"
+                                    )
+                                    _log_to_file(log_msg, log_file)
+                                
+                                # Extract and normalize repository URL
+                                npm_repo_url_raw = npm_data.get("repository")
+                                if npm_repo_url_raw:
+                                    # Normalize the repository URL (remove git+ prefix, convert to https://)
+                                    repo_url_from_npm = _normalize_npm_repo_url(npm_repo_url_raw)
+                                    if repo_url_from_npm:
+                                        log_msg = (
+                                            f"[npm] Normalized repository URL for {package_id}: "
+                                            f"{npm_repo_url_raw} -> {repo_url_from_npm}"
+                                        )
+                                        _log_to_file(log_msg, log_file)
+                                        if verbose:
+                                            print(f"[INFO] {log_msg}", file=sys.stderr)
+                                    elif npm_repo_url_raw != homepage_url:
+                                        log_msg = f"[npm] Repository for {package_id}: {npm_repo_url_raw}"
+                                        _log_to_file(log_msg, log_file)
+                                
+                                # Log keywords if available
+                                keywords = npm_data.get("keywords", [])
+                                if keywords:
+                                    keywords_str = ", ".join(keywords[:10])  # Limit to first 10
+                                    log_msg = f"[npm] Keywords for {package_id}: {keywords_str}"
+                                    _log_to_file(log_msg, log_file)
+                        except Exception as npm_data_exc:  # pylint: disable=broad-exception-caught
+                            # Non-fatal: continue even if comprehensive data extraction fails
+                            if verbose:
+                                package_id = f"{artifact}:{version}"
+                                log_msg = f"[npm] Note: Could not extract comprehensive data for {package_id}: {npm_data_exc}"
+                                _log_to_file(log_msg, log_file)
+                except Exception as exc:  # pylint: disable=broad-exception-caught
+                    package_id = f"{group}:{artifact}:{version}" if group else f"{artifact}:{version}"
+                    log_msg = f"[WARNING] Failed to lookup metadata for {package_id}: {exc}"
                     _log_to_file(log_msg, log_file)
-                if license:
-                    license_type = license
-                    log_msg = f"Found license for {group}:{artifact}:{version}: {license_type}"
-                    _log_to_file(log_msg, log_file)
-            except Exception as exc:  # pylint: disable=broad-exception-caught
-                log_msg = f"[WARNING] Failed to lookup Maven Central data for {group}:{artifact}:{version}: {exc}"
-                _log_to_file(log_msg, log_file)
-                if verbose:
-                    print(log_msg, file=sys.stderr)
+                    if verbose:
+                        print(log_msg, file=sys.stderr)
 
-        # Build Maven Central URLs for POM and JAR from PURL
+        # Build Maven Central URLs for POM and JAR from PURL (only for Maven packages)
         pom_url_maven = ""
         jar_url_maven = ""
-        if comp.purl:
-            pom_url_maven = build_maven_central_url_from_purl(comp.purl, file_type="pom")
-            jar_url_maven = build_maven_central_url_from_purl(comp.purl, file_type="jar")
-        elif comp.group and comp.name and comp.version:
-            # Fallback: build URLs from coordinates if PURL not available
-            from sbom_compile_order.parser import build_maven_central_url
-            pom_url_maven = build_maven_central_url(comp.group, comp.name, comp.version, "pom")
-            jar_url_maven = build_maven_central_url(comp.group, comp.name, comp.version, "jar")
+        if is_maven:
+            if comp.purl:
+                pom_url_maven = build_maven_central_url_from_purl(comp.purl, file_type="pom")
+                jar_url_maven = build_maven_central_url_from_purl(comp.purl, file_type="jar")
+            elif comp.group and comp.name and comp.version:
+                # Fallback: build URLs from coordinates if PURL not available
+                from sbom_compile_order.parser import build_maven_central_url
+                pom_url_maven = build_maven_central_url(comp.group, comp.name, comp.version, "pom")
+                jar_url_maven = build_maven_central_url(comp.group, comp.name, comp.version, "jar")
 
         # Determine if we already have the POM downloaded (even if enhanced.csv is stale)
         downloaded_col_idx = len(header)
@@ -331,10 +476,11 @@ def create_enhanced_csv(
         file_location = ""
         repo_url_from_pom = ""  # Will be extracted from POM file
         repo_url = row[9] if len(row) > 9 else ""  # Repo URL is in column 9 (original from SBOM)
+        repo_url_from_npm = ""  # Will be extracted from npm package data (normalized to https://)
         
-        # Always check POM download status if pom_downloader is available
+        # Always check POM download status if pom_downloader is available (only for Maven packages)
         # This ensures download status is up-to-date even in incremental mode
-        if pom_downloader and comp.group and comp.name and comp.version and not skip_pom_download:
+        if pom_downloader and is_maven and comp.group and comp.name and comp.version and not skip_pom_download:
             try:
                 pom_result, auth_req = pom_downloader.download_pom(comp, repo_url or "")
                 pom_filename = pom_result or ""
@@ -428,20 +574,40 @@ def create_enhanced_csv(
                 downloaded_status = "Not attempted"
 
         # Enhance the row - update Homepage URL, License Type, POM, AUTH, Downloaded, and File Location columns
-        # Ensure row has enough columns (now 16 columns from compile-order.csv)
-        while len(row) < 16:
+        # Ensure row has enough columns (17 columns from compile-order.csv)
+        while len(row) < 17:
             row.append("")
 
         # Always update columns 9 (Repo URL), 11 (POM), 12 (AUTH), 13 (Homepage URL), and 14 (License Type)
         # with enhanced data from Maven Central and POM downloads
         # Column positions: 0=Order, 1=Group ID, 2=Package Name, 3=Version/Tag,
         # 4=PURL, 5=Ref, 6=Type, 7=Scope, 8=Provided URL, 9=Repo URL, 10=Dependencies,
-        # 11=POM, 12=AUTH, 13=Homepage URL, 14=License Type, 15=External Dependency Count
+        # 11=POM, 12=AUTH, 13=Homepage URL, 14=License Type, 15=External Dependency Count,
+        # 16=Cyclical Dependencies
         
-        # Update Repo URL (column 9) with URL from POM file if available
+        # Update Repo URL (column 9) with URL from POM file (Maven) or npm data (npm)
+        # For npm packages, also check Provided URL (column 8) if it contains git+ prefixes
         # In incremental mode, preserve existing if no new URL found
-        if repo_url_from_pom:
+        if is_maven and repo_url_from_pom:
             row[9] = repo_url_from_pom
+        elif is_npm:
+            # Prefer normalized URL from npm registry data
+            if repo_url_from_npm:
+                row[9] = repo_url_from_npm
+            else:
+                # Fallback: normalize Provided URL (column 8) if it exists and has git+ prefix
+                provided_url = row[8] if len(row) > 8 else ""
+                if provided_url and ("git+" in provided_url or provided_url.startswith("git@") or provided_url.startswith("git://")):
+                    normalized_provided_url = _normalize_npm_repo_url(provided_url)
+                    if normalized_provided_url:
+                        row[9] = normalized_provided_url
+                        log_msg = (
+                            f"[npm] Normalized Provided URL to Repo URL for {artifact}:{version}: "
+                            f"{provided_url} -> {normalized_provided_url}"
+                        )
+                        _log_to_file(log_msg, log_file)
+                        if verbose:
+                            print(f"[INFO] {log_msg}", file=sys.stderr)
         elif use_existing_data and existing_row_data and len(existing_row_data) > 9:
             row[9] = existing_row_data[9]  # Preserve existing Repo URL
         

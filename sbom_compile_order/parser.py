@@ -8,6 +8,7 @@ import json
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
+from urllib.parse import unquote
 
 
 class Component:
@@ -144,64 +145,64 @@ def clean_artifact_name(artifact: str, version: Optional[str] = None) -> str:
 
 def parse_purl(purl: str) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
     """
-    Parse a PURL (Package URL) to extract Maven coordinates.
+    Parse a Package URL (PURL) and extract coordinates.
 
-    PURL format: pkg:maven/{group}/{artifact}@{version}?type={type}
-
-    Args:
-        purl: Package URL string
-
-    Returns:
-        Tuple of (group, artifact, version, type) - all may be None if parsing fails
+    Supports Maven and npm package types, returning a tuple of
+    (group, artifact, version, package_type).
     """
-    if not purl or not purl.startswith("pkg:maven/"):
+    if not purl or not purl.startswith("pkg:"):
         return None, None, None, None
 
-    try:
-        # Remove the pkg:maven/ prefix
-        maven_part = purl[10:]  # len("pkg:maven/") = 10
+    type_and_rest = purl[4:]  # Remove "pkg:"
+    if "/" not in type_and_rest:
+        return None, None, None, None
 
-        # Split on @ to separate coordinates from version
-        if "@" in maven_part:
-            coords_part, rest = maven_part.split("@", 1)
-        else:
-            coords_part = maven_part
-            rest = ""
+    package_type, remainder = type_and_rest.split("/", 1)
+    package_type = package_type.lower()
 
-        # Extract version and type from rest FIRST (before cleaning artifact)
-        version = None
-        file_type = None
+    # Separate query parameters if present
+    if "?" in remainder:
+        remainder = remainder.split("?", 1)[0]
 
-        if rest:
-            # Check for query parameters
-            if "?" in rest:
-                version_part, query_part = rest.split("?", 1)
-                version = version_part if version_part else None
+    version = None
+    if "@" in remainder:
+        name_part, version_part = remainder.rsplit("@", 1)
+        version = version_part if version_part else None
+    else:
+        name_part = remainder
 
-                # Extract type from query parameters
-                type_match = re.search(r"type=([^&]+)", query_part)
-                if type_match:
-                    file_type = type_match.group(1)
-            else:
-                version = rest if rest else None
-
-        # Split coordinates on / to get group and artifact
-        # Group may contain multiple segments separated by /
-        parts = coords_part.split("/")
-        if len(parts) < 2:
+    if package_type == "maven":
+        coords = name_part.split("/")
+        if len(coords) < 2:
             return None, None, None, None
 
-        # Last part is artifact, everything before is group
-        artifact = parts[-1]
-        group = ".".join(parts[:-1])
-        
-        # Clean artifact name: remove version and file extension if present
-        # Use the clean_artifact_name helper function
+        artifact = coords[-1]
+        group = ".".join(coords[:-1])
         artifact = clean_artifact_name(artifact, version)
 
-        return group, artifact, version, file_type
-    except Exception:  # pylint: disable=broad-exception-caught
-        return None, None, None, None
+        return group, artifact, version, package_type
+
+    if package_type == "npm":
+        package_name = unquote(name_part).strip()
+        if not package_name:
+            return None, None, None, None
+        return None, package_name, version, package_type
+
+    return None, name_part or None, version, package_type
+
+
+def _extract_purl_query_type(purl: str) -> Optional[str]:
+    """
+    Extract the `type` parameter from a PURL query string if present.
+    """
+    if not purl or "?" not in purl:
+        return None
+
+    query = purl.split("?", 1)[1]
+    for param in query.split("&"):
+        if param.startswith("type="):
+            return param.split("=", 1)[1]
+    return None
 
 
 def extract_package_type(purl: str) -> Optional[str]:
@@ -278,27 +279,16 @@ def build_maven_central_url(
 
 def build_maven_central_url_from_purl(purl: Optional[str], file_type: Optional[str] = None) -> str:
     """
-    Build Maven Central URL from a PURL.
-
-    Args:
-        purl: Package URL string (may be None or empty)
-        file_type: Optional file type override (jar, pom, etc.)
-                   If not provided, extracts from PURL query parameter
-
-    Returns:
-        Maven Central URL string, or empty string if PURL cannot be parsed
+    Build a Maven Central URL from a PURL if it represents a Maven package.
     """
     if not purl:
         return ""
 
-    group, artifact, version, purl_type = parse_purl(purl)
-
-    if not group or not artifact or not version:
+    group, artifact, version, package_type = parse_purl(purl)
+    if package_type != "maven" or not group or not artifact or not version:
         return ""
 
-    # Use provided file_type or extract from PURL
-    extension = file_type if file_type else (purl_type if purl_type else "jar")
-
+    extension = file_type or _extract_purl_query_type(purl) or "jar"
     return build_maven_central_url(group, artifact, version, extension)
 
 

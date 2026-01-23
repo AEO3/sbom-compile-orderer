@@ -16,6 +16,7 @@ from typing import Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from sbom_compile_order import __version__
 from sbom_compile_order.parser import Component, build_maven_central_url_from_purl
 
 
@@ -179,7 +180,7 @@ class PackageDownloader:
 
         try:
             req = Request(artifact_url)
-            req.add_header("User-Agent", "sbom-compile-order/1.4.1")
+            req.add_header("User-Agent", f"sbom-compile-order/{__version__}")
             with urlopen(req, timeout=30) as response:
                 if response.getcode() == 200:
                     artifact_content = response.read()
@@ -254,7 +255,7 @@ class PackageDownloader:
                     self._log(f"[URL USING TO DOWNLOAD] {fallback_url}")
                     try:
                         fallback_req = Request(fallback_url)
-                        fallback_req.add_header("User-Agent", "sbom-compile-order/1.4.1")
+                        fallback_req.add_header("User-Agent", f"sbom-compile-order/{__version__}")
                         with urlopen(fallback_req, timeout=30) as fallback_response:
                             if fallback_response.getcode() == 200:
                                 artifact_content = fallback_response.read()

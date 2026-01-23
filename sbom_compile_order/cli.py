@@ -13,8 +13,8 @@ from typing import List, Optional
 from sbom_compile_order.dependency_resolver import DependencyResolver
 from sbom_compile_order.graph import DependencyGraph
 from sbom_compile_order.hash_cache import HashCache
-from sbom_compile_order.maven_central import MavenCentralClient
 from sbom_compile_order.output import get_formatter, write_dependencies_csv
+from sbom_compile_order.package_metadata import PackageMetadataClient
 from sbom_compile_order.parser import Component, SBOMParser, extract_package_type
 from sbom_compile_order.pom_downloader import POMDownloader
 from sbom_compile_order.pom_dependency_extractor import POMDependencyExtractor
@@ -48,14 +48,15 @@ def _start_parallel_downloads(
     pom_downloader,
     package_downloader,
     package_types: List[str],
-    log_file: Path,
-    verbose: bool,
-    context: str,
+    npm_downloader=None,
+    log_file: Path = None,
+    verbose: bool = False,
+    context: str = "",
 ) -> Optional["threading.Thread"]:
     """
-    Start background downloads for configured POMs and artifacts.
+    Start background downloads for configured POMs, artifacts, and npm packages.
     """
-    if not pom_downloader and not package_downloader:
+    if not pom_downloader and not package_downloader and not npm_downloader:
         return None
 
     from sbom_compile_order.parallel_downloader import ParallelDownloader
@@ -66,6 +67,8 @@ def _start_parallel_downloads(
     if package_downloader and package_types:
         artifact_labels = [f"{atype.upper()}s" for atype in package_types]
         download_types.extend(artifact_labels)
+    if npm_downloader:
+        download_types.append("npm packages")
 
     if not download_types:
         return None
@@ -75,6 +78,7 @@ def _start_parallel_downloads(
         pom_downloader=pom_downloader,
         artifact_downloader=package_downloader,
         artifact_types=package_types,
+        npm_downloader=npm_downloader,
         max_workers=5,
         verbose=verbose,
         log_file=log_file,
@@ -84,7 +88,8 @@ def _start_parallel_downloads(
     log_msg = (
         f"Starting parallel background downloads ({download_types_str}) {context}"
     )
-    _log_to_file(log_msg, log_file)
+    if log_file:
+        _log_to_file(log_msg, log_file)
     if verbose:
         print(log_msg, file=sys.stderr)
 
@@ -221,10 +226,17 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--npm",
+        action="store_true",
+        help="Download npm package tarballs from the npm registry",
+    )
+
+    parser.add_argument(
         "-m",
         "--maven-central-lookup",
         action="store_true",
-        help="Look up package information from Maven Central API (homepage URL, license)",
+        help="Look up package metadata (homepage, license) from Maven Central for Maven "
+        "packages and from the npm registry for npm packages",
     )
 
     parser.add_argument(
@@ -582,11 +594,26 @@ def main() -> None:
             if args.verbose:
                 print(log_msg, file=sys.stderr)
 
+        # Initialize npm package downloader if requested
+        npm_downloader = None
+        if args.npm:
+            from sbom_compile_order.npm_package_downloader import NpmPackageDownloader
+
+            npm_downloader = NpmPackageDownloader(
+                cache_dir, verbose=args.verbose
+            )
+            if not hasattr(npm_downloader, "log_file"):
+                npm_downloader.log_file = log_file
+            log_msg = f"npm package downloader initialized: {cache_dir}"
+            _log_to_file(log_msg, log_file)
+            if args.verbose:
+                print(log_msg, file=sys.stderr)
+
         # Initialize Maven Central client if requested
-        maven_central_client = None
+        package_metadata_client = None
         if args.maven_central_lookup or args.resolve_dependencies or args.extended_csv:
-            maven_central_client = MavenCentralClient(verbose=args.verbose)
-            log_msg = "Maven Central API client initialized"
+            package_metadata_client = PackageMetadataClient(verbose=args.verbose)
+            log_msg = "Package metadata client initialized"
             _log_to_file(log_msg, log_file)
             if args.verbose:
                 print(log_msg, file=sys.stderr)
@@ -762,9 +789,9 @@ def main() -> None:
 
             # Create compile-order.csv WITHOUT Maven Central lookups or POM downloads
             # This file is written once and never modified again
-            # Pass None for pom_downloader, maven_central_client and dependency_resolver to skip lookups
+            # Pass None for pom_downloader, package metadata client and dependency_resolver to skip lookups
             if compile_order_needs_regen:
-                log_msg = "Creating compile-order.csv (base file, no Maven Central lookups, no POM downloads)"
+                log_msg = "Creating compile-order.csv (base file, no metadata lookups, no POM downloads)"
                 _log_to_file(log_msg, log_file)
                 if args.verbose:
                     print(log_msg, file=sys.stderr)
@@ -778,7 +805,7 @@ def main() -> None:
                     args.include_metadata,
                     graph.graph,
                     None,  # No POM downloads for compile-order.csv - all enhanced data goes to enhanced.csv
-                    None,  # No Maven Central lookups for compile-order.csv
+                    None,  # No metadata lookups for compile-order.csv
                     None,  # No dependency resolver for compile-order.csv
                 )
                 
@@ -806,7 +833,7 @@ def main() -> None:
             # Create enhanced CSV if Maven Central lookup is requested
             # This reads from compile-order.csv and writes incrementally to enhanced.csv
             # All enhanced data (Maven Central lookups, POM downloads) goes here, NOT in compile-order.csv
-            if args.maven_central_lookup and maven_central_client:
+            if args.maven_central_lookup and package_metadata_client:
                 from sbom_compile_order.enhanced_csv import create_enhanced_csv
 
                 # Determine compile-order.csv path (same as output_path)
@@ -849,6 +876,7 @@ def main() -> None:
                     pom_downloader if args.poms else None,
                     package_downloader if args.pull_package else None,
                     package_types if args.pull_package else [],
+                    npm_downloader if args.npm else None,
                     log_file,
                     args.verbose,
                     "while enhanced.csv is being created",
@@ -861,7 +889,7 @@ def main() -> None:
                 create_enhanced_csv(
                     compile_order_path,
                     enhanced_csv_path,
-                    maven_central_client,
+                    package_metadata_client,
                     pom_downloader=pom_downloader,  # POM downloads happen in enhanced.csv
                     verbose=args.verbose,
                     log_file=log_file,
@@ -902,13 +930,36 @@ def main() -> None:
                         if args.verbose:
                             print(log_msg, file=sys.stderr)
 
-        # Start package downloads when Maven lookups are not requested but --pull-package is set
-        if args.pull_package and not args.maven_central_lookup:
+                # Log npm package download summary
+                if npm_downloader:
+                    npm_cache_dir = cache_dir / "npm"
+                    if npm_cache_dir.exists():
+                        npm_files = list(npm_cache_dir.glob("*.tgz"))
+                        npm_count = len(npm_files)
+                        log_msg = (
+                            f"npm package download summary: {npm_count} package(s) cached in "
+                            f"{npm_cache_dir} (out of {len(order)} components processed)"
+                        )
+                        _log_to_file(log_msg, log_file)
+                        if args.verbose:
+                            print(log_msg, file=sys.stderr)
+                    else:
+                        log_msg = (
+                            f"npm package download summary: No npm packages were downloaded "
+                            f"(out of {len(order)} components processed)"
+                        )
+                        _log_to_file(log_msg, log_file)
+                        if args.verbose:
+                            print(log_msg, file=sys.stderr)
+
+        # Start package downloads when Maven lookups are not requested but --pull-package or --npm is set
+        if (args.pull_package or args.npm) and not args.maven_central_lookup:
             package_download_thread = _start_parallel_downloads(
                 output_path,
                 None,
-                package_downloader,
-                package_types,
+                package_downloader if args.pull_package else None,
+                package_types if args.pull_package else [],
+                npm_downloader if args.npm else None,
                 log_file,
                 args.verbose,
                 "after compile-order.csv creation",
@@ -964,7 +1015,7 @@ def main() -> None:
                 args.include_metadata,
                 graph.graph if args.format == "csv" else None,
                 pom_downloader,
-                maven_central_client,
+                package_metadata_client,
                 dependency_resolver,
             )
 

@@ -21,14 +21,17 @@ python3 -m sbom_compile_order.cli <sbom-file.json>
 ## Basic Usage
 
 ```bash
-# Output compilation order to stdout (text format)
-sbom-compile-order example_sbom.json
+# Output compilation order to CSV (default format, saved to cache/compile-order.csv)
+sbom-compile-order examples/example_sbom.json
+
+# Output to stdout in JSON
+sbom-compile-order examples/example_sbom.json -f json
 
 # Use output directory for JSON (writes compile-order.json there)
-sbom-compile-order example_sbom.json -o out -f json
+sbom-compile-order examples/example_sbom.json -o out -f json
 
 # Verbose output with metadata
-sbom-compile-order example_sbom.json -v --include-metadata
+sbom-compile-order examples/example_sbom.json -v --include-metadata
 ```
 
 ## How It Works
@@ -93,37 +96,50 @@ Order:
 }
 ```
 
-### CSV Format
+### CSV Format (compile-order.csv)
+
+The CSV has 17 columns. Example (abbreviated):
+
 ```csv
-Order,Group ID,Package Name,Version/Tag,Source URL
-1,org.example:base,base,0.5.0,https://github.com/example/base.git
-2,org.example:core,core,1.0.0,https://github.com/example/core.git
-3,org.example:utils,utils,2.0.0,https://github.com/example/utils.git
-4,org.example:api,api,3.0.0,https://github.com/example/api.git
+Order,Group ID,Package Name,Version/Tag,PURL,Ref,Type,Scope,Provided URL,Repo URL,Dependencies,POM,AUTH,Homepage URL,License Type,External Dependency Count,Cyclical Dependencies
+1,org.example:base,base,0.5.0,pkg:maven/org.example/base@0.5.0,,library,,https://github.com/example/base.git,,0,,,https://example.com,Apache-2.0,0,
 ```
 
-The CSV format is particularly useful for:
-- Importing into spreadsheets for analysis
-- Scripting build processes
-- Tracking source URLs and versions for compilation
+The CSV format is useful for importing into spreadsheets, scripting build processes, and tracking source URLs and versions.
 
-**CSV Columns:**
-- **Order**: Sequential compilation order number
-- **Group ID**: Full package identifier (group:name format)
-- **Package Name**: Package name only (without group prefix)
-- **Version/Tag**: Version or tag to use when checking out the source code
-- **Source URL**: Source repository URL extracted from SBOM external references (VCS URLs preferred)
+**CSV Columns:** Order, Group ID, Package Name, Version/Tag, PURL, Ref, Type, Scope, Provided URL, Repo URL, Dependencies, POM, AUTH, Homepage URL, License Type, External Dependency Count, Cyclical Dependencies. See [README](README.md) for descriptions.
 
 ## Command-Line Options
 
-- `sbom_file`: Path to the CycloneDX SBOM JSON file (required)
-- `-o, --output DIR`: Working directory for generated files (default: cache). For text/json without -o, stdout.
-- `-f, --format FORMAT`: Output format: `text`, `json`, or `csv` (default: `text`)
-- `-v, --verbose`: Enable verbose output showing progress
+Run `sbom-compile-order --help` for the full list. Summary:
+
+**Output**
+- `-o, --output DIR`: Working directory for all generated files (default: cache). For text/json without `-o`, output goes to stdout.
+- `-f, --format FORMAT`: Output format: `text`, `json`, or `csv` (default: `csv`)
+- `-v, --verbose`: Enable verbose output
 - `--include-metadata`: Include full component metadata in output
-- `--pull-package`: Download packages (JARs) from Maven Central
-- `--jar`: Download JAR artifacts when pulling packages (implies `--pull-package`)
-- `--war`: Download WAR artifacts when pulling packages (implies `--pull-package`)
+
+**Filtering**
+- `--ignore-group-ids IDS`: Group IDs to ignore (space-separated)
+- `--exclude-types TYPES`: Component types to exclude
+- `--exclude-package-types TYPES`: Package types to exclude (e.g. npm, pypi)
+
+**Maven**
+- `-m, --maven-central-lookup`: Look up package metadata (homepage, license) from Maven Central and npm registry
+- `--poms`: Download POM files from Maven Central
+- `--pull-package`: Download JARs/WARs from Maven Central
+- `--jar`, `--war`: Artifact types when using `--pull-package`
+- `-c, --clone-repos`: Clone repositories to find POM files
+
+**npm**
+- `--npm`: Download npm package tarballs from the npm registry
+
+**Dependencies and POM analysis**
+- `-r, --resolve-dependencies`: Resolve transitive dependencies (mvnrepository.com)
+- `-d, --max-dependency-depth N`: Max depth (default: 2)
+- `-e, --extended-csv FILE`: Extended CSV filename in output directory
+- `--leaves`: Extract dependencies from POMs into leaves.csv
+- `--leaves-output FILE`: Leaves CSV filename in output directory
 
 ## Handling Circular Dependencies
 

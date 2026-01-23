@@ -11,6 +11,7 @@ A Python application that analyses CycloneDX SBOM (Software Bill of Materials) f
 - ✅ **Circular Dependency Detection**: Identifies and handles circular dependencies gracefully
 - ✅ **Multiple Output Formats**: Supports human-readable text, machine-readable JSON, and CSV output
 - ✅ **Component Metadata**: Optional inclusion of full component metadata in output
+- ✅ **npm Registry Metadata**: Resolve homepage and license info for npm packages when metadata lookups are enabled
 
 ## Installation
 
@@ -91,23 +92,23 @@ python -m build
 This will create `dist/` directory with `.whl` and `.tar.gz` files that can be installed via pip:
 
 ```bash
-pip install dist/sbom_compile_order-1.0.0-py3-none-any.whl
+pip install dist/sbom_compile_order-*-py3-none-any.whl
 ```
 
 ## Quick Start
 
 ```bash
 # Basic usage - output compilation order to CSV (default format)
-sbom-compile-order example_sbom.json
+sbom-compile-order examples/example_sbom.json
 
 # Use a different output directory (writes compile-order.json there)
-sbom-compile-order example_sbom.json -o out -f json
+sbom-compile-order examples/example_sbom.json -o out -f json
 
 # Use output directory for CSV (writes compile-order.csv, enhanced.csv, poms, etc. there)
-sbom-compile-order example_sbom.json -o out -f csv
+sbom-compile-order examples/example_sbom.json -o out -f csv
 
 # Verbose output with full metadata
-sbom-compile-order example_sbom.json -v --include-metadata
+sbom-compile-order examples/example_sbom.json -v --include-metadata
 ```
 
 ## Usage Examples
@@ -134,7 +135,7 @@ sbom-compile-order my-project.sbom.json -v
 # Download POM files from Maven Central and create enhanced CSV
 sbom-compile-order my-project.sbom.json --poms
 
-# Look up package information from Maven Central (homepage, license)
+# Look up package metadata (homepage, license) from Maven Central and npm registry
 sbom-compile-order my-project.sbom.json -m
 
 # Resolve transitive dependencies and create extended CSV
@@ -152,6 +153,9 @@ sbom-compile-order my-project.sbom.json --exclude-types application
 # Exclude specific package types (e.g., npm, pypi)
 sbom-compile-order my-project.sbom.json --exclude-package-types npm pypi
 
+# Download npm packages to cache/npm directory
+sbom-compile-order my-project.sbom.json --npm
+
 # Clone repositories to find POM files (instead of Maven Central)
 sbom-compile-order my-project.sbom.json -c
 
@@ -164,9 +168,12 @@ sbom-compile-order my-project.sbom.json --poms -r -v --max-dependency-depth 2
 The tool creates several output files in the output directory (default: `cache/`; override with `-o`):
 
 - **compile-order.csv**: Base compilation order (created by default)
-- **enhanced.csv**: Enhanced CSV with Maven Central lookups and POM downloads (created with `-m` or `--poms`)
+- **enhanced.csv**: Enhanced CSV with package metadata (Maven Central and npm registry), POM downloads, and artifact URLs (created with `-m` or `--poms`)
 - **extended-dependencies.csv**: Extended dependencies with transitive resolution (created with `-r`)
 - **leaves.csv**: Dependencies found in POM files but not in compile-order.csv (created with `--leaves`)
+- **poms/**: Cached POM files (when `--poms` is used)
+- **jars/**: Cached JAR/WAR artifacts (when `--pull-package` with `--jar`/`--war` is used)
+- **npm/**: Cached npm package tarballs (when `--npm` is used)
 - **sbom-compile-order.log**: Detailed log file with all processing information
 
 ## Usage
@@ -188,15 +195,19 @@ Output Options:
 Filtering Options:
   --ignore-group-ids IDS    Group IDs to ignore (space-separated)
   --exclude-types TYPES      Component types to exclude (space-separated)
-  --exclude-package-types    Package types to exclude (space-separated)
+  --exclude-package-types TYPES    Package types to exclude (space-separated, e.g. npm pypi)
 
 Maven Central Integration:
-  -m, --maven-central-lookup    Look up package information from Maven Central API
+  -m, --maven-central-lookup    Look up package metadata (homepage, license) from Maven Central
+                                for Maven packages and from the npm registry for npm packages
   --poms                        Download POM files from Maven Central
   --pull-package                Download packages (JARs) from Maven Central
   --jar                         Download JAR artifacts when pulling packages (implies --pull-package)
   --war                         Download WAR artifacts when pulling packages (implies --pull-package)
   -c, --clone-repos              Clone repositories to find POM files
+
+npm Integration:
+  --npm                         Download npm package tarballs from the npm registry
 
 Dependency Resolution:
   -r, --resolve-dependencies     Resolve transitive dependencies
@@ -253,21 +264,28 @@ Order:
 }
 ```
 
-**CSV Format:**
+**CSV Format (compile-order.csv):**
+
+The CSV has 17 columns. Example (abbreviated):
+
 ```csv
-Order,Group ID,Package Name,Version/Tag,Source URL
-1,org.example:base,base,0.5.0,https://github.com/example/base.git
-2,org.example:core,core,1.0.0,https://github.com/example/core.git
-3,org.example:utils,utils,2.0.0,https://github.com/example/utils.git
-4,org.example:api,api,3.0.0,https://github.com/example/api.git
+Order,Group ID,Package Name,Version/Tag,PURL,Ref,Type,Scope,Provided URL,Repo URL,Dependencies,POM,AUTH,Homepage URL,License Type,External Dependency Count,Cyclical Dependencies
+1,org.example:base,base,0.5.0,pkg:maven/org.example/base@0.5.0,,library,,https://github.com/example/base.git,,0,,,https://example.com,Apache-2.0,0,
 ```
 
-The CSV format includes:
-- **Order**: Compilation order number (1, 2, 3, ...)
-- **Group ID**: Package identifier in group:name format
-- **Package Name**: Package name only (without group)
-- **Version/Tag**: Version or tag to use when checking out/cloning
-- **Source URL**: Source repository URL from SBOM external references (if available)
+- **Order**: Compilation order number
+- **Group ID**: Package identifier (group:name for Maven; name for npm)
+- **Package Name**: Package name only
+- **Version/Tag**: Version or tag
+- **PURL**: Package URL (e.g. `pkg:maven/...` or `pkg:npm/...`)
+- **Ref**, **Type**, **Scope**: SBOM component fields
+- **Provided URL**: Source URL from SBOM external references
+- **Repo URL**: Git-cloneable repo (filled in enhanced.csv from POM/npm)
+- **Dependencies**: Incoming dependency count
+- **POM**, **AUTH**: POM filename and auth flag (filled in enhanced.csv)
+- **Homepage URL**, **License Type**: From Maven Central/npm (filled in enhanced.csv)
+- **External Dependency Count**: Dependencies not in the SBOM (when `-r` used)
+- **Cyclical Dependencies**: Cycle description when circular deps exist
 
 ## How It Works
 
@@ -293,16 +311,30 @@ The CSV format includes:
 
 ```
 sbom-compile-order/
-├── README.md                    # This file
-├── USAGE.md                     # Detailed usage guide
-├── pyproject.toml               # Project configuration and dependencies
-├── example_sbom.json             # Example SBOM file for testing
+├── README.md                     # This file
+├── USAGE.md                      # Detailed usage guide
+├── pyproject.toml                # Project configuration and dependencies
+├── examples/                     # Example SBOM files
+│   ├── example_sbom.json
+│   ├── juice-shop-bom.json
+│   └── keycloak-10.0.2.sbom.json
 └── sbom_compile_order/
-    ├── __init__.py              # Package initialization
-    ├── parser.py                # SBOM parsing logic
-    ├── graph.py                 # Dependency graph and topological sort
-    ├── output.py                # Output formatters (text, JSON)
-    └── cli.py                   # Command-line interface
+    ├── __init__.py               # Package initialization and csv field size limit
+    ├── cli.py                    # Command-line interface
+    ├── parser.py                 # SBOM parsing and PURL handling
+    ├── graph.py                  # Dependency graph and topological sort
+    ├── output.py                 # Output formatters (text, JSON, CSV)
+    ├── enhanced_csv.py           # Enhanced CSV with metadata and POM/JAR URLs
+    ├── hash_cache.py             # Hash-based caching for incremental runs
+    ├── dependency_resolver.py    # Transitive dependencies (mvnrepository.com)
+    ├── package_metadata.py       # Unified metadata (Maven Central + npm registry)
+    ├── maven_central.py          # Maven Central API client
+    ├── npm_registry.py           # npm registry API client
+    ├── pom_downloader.py         # POM file downloader
+    ├── package_downloader.py     # JAR/WAR downloader
+    ├── npm_package_downloader.py # npm tarball downloader
+    ├── parallel_downloader.py    # Background POM, artifact, and npm downloads
+    └── pom_dependency_extractor.py # POM parsing and leaves.csv
 ```
 
 ## Requirements
@@ -329,12 +361,17 @@ This tool is particularly useful when:
 
 ### Running Tests
 
+Requires Python 3.12+ (see `requires-python` in `pyproject.toml`).
+
 ```bash
-# Run the tool with example SBOM
-python3 -m sbom_compile_order.cli example_sbom.json
+# Run the tool with example SBOM (from project root)
+python3 -m sbom_compile_order.cli examples/example_sbom.json
 
 # Test JSON output
-python3 -m sbom_compile_order.cli example_sbom.json -f json
+python3 -m sbom_compile_order.cli examples/example_sbom.json -f json
+
+# Run pytest (use Python 3.12: python3.12 -m pytest if available)
+pytest tests/ -v
 ```
 
 ### Code Style

@@ -1,5 +1,5 @@
 """ 
-Parallel downloader for POM and artifacts.
+Parallel downloader for POM, artifacts, and npm packages.
 
 Downloads files in parallel using threading while enhanced.csv is being created.
 """
@@ -15,11 +15,11 @@ from pathlib import Path
 from queue import Queue
 from typing import List, Optional, Tuple
 
-from sbom_compile_order.parser import Component
+from sbom_compile_order.parser import Component, extract_package_type
 
 
 class ParallelDownloader:
-    """Downloads POM and JAR files in parallel using background threads."""
+    """Downloads POM, JAR, and npm packages in parallel using background threads."""
 
     def __init__(
         self,
@@ -27,6 +27,7 @@ class ParallelDownloader:
         pom_downloader=None,
         artifact_downloader=None,
         artifact_types: Optional[List[str]] = None,
+        npm_downloader=None,
         max_workers: int = 5,
         verbose: bool = False,
         log_file: Optional[Path] = None,
@@ -38,6 +39,8 @@ class ParallelDownloader:
             compile_order_csv_path: Path to compile-order.csv file
             pom_downloader: Optional POMDownloader instance
             artifact_downloader: Optional PackageDownloader instance
+            artifact_types: List of artifact types to download (e.g., ["jar", "war"])
+            npm_downloader: Optional NpmPackageDownloader instance
             max_workers: Maximum number of parallel download threads
             verbose: Enable verbose output
             log_file: Optional path to log file
@@ -51,6 +54,7 @@ class ParallelDownloader:
             else ["jar"]
         )
         self.artifact_types = normalized_artifact_types
+        self.npm_downloader = npm_downloader
         self.max_workers = max_workers
         self.verbose = verbose
         self.log_file = log_file
@@ -191,6 +195,35 @@ class ParallelDownloader:
             self._log(f"[PARALLEL DOWNLOAD] ERROR downloading {artifact_label} for {component_id}: {exc}")
         return component_id, False, artifact_type
 
+    def _download_npm_package(self, component: Component) -> Tuple[str, bool, str]:
+        """
+        Download npm package tarball for a component.
+
+        Args:
+            component: Component to download npm package for
+
+        Returns:
+            Tuple of (component_id, success, "npm")
+        """
+        component_id = f"{component.name}@{component.version}"
+        try:
+            if self.npm_downloader:
+                tarball_filename, auth_required = self.npm_downloader.download_package(component)
+                if tarball_filename:
+                    self._log(
+                        f"[PARALLEL DOWNLOAD] Downloaded npm package: {component_id} -> {tarball_filename}"
+                    )
+                    return component_id, True, "npm"
+                elif auth_required:
+                    self._log(f"[PARALLEL DOWNLOAD] npm package requires auth: {component_id}")
+                    return component_id, False, "npm"
+                else:
+                    self._log(f"[PARALLEL DOWNLOAD] npm package download failed: {component_id}")
+                    return component_id, False, "npm"
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            self._log(f"[PARALLEL DOWNLOAD] ERROR downloading npm package for {component_id}: {exc}")
+        return component_id, False, "npm"
+
     def start_background_downloads(self) -> Optional[threading.Thread]:
         """
         Start background downloads in a separate thread.
@@ -198,7 +231,7 @@ class ParallelDownloader:
         Returns:
             Thread object that can be joined later, or None if no downloaders configured
         """
-        if not self.pom_downloader and not self.artifact_downloader:
+        if not self.pom_downloader and not self.artifact_downloader and not self.npm_downloader:
             self._log("[PARALLEL DOWNLOAD] No downloaders configured, skipping parallel downloads")
             return None
 
@@ -219,14 +252,25 @@ class ParallelDownloader:
             # Create download tasks
             download_tasks = []
             for comp in components:
-                if not comp.group or not comp.name or not comp.version:
+                if not comp.name or not comp.version:
                     continue
 
-                if self.pom_downloader:
-                    download_tasks.append(("pom", comp))
-                if self.artifact_downloader:
-                    for artifact_type in self.artifact_types:
-                        download_tasks.append((artifact_type, comp))
+                # Check package type
+                package_type = extract_package_type(comp.purl) if comp.purl else None
+                is_maven = package_type == "maven"
+                is_npm = package_type == "npm"
+
+                # Maven-specific downloads
+                if is_maven:
+                    if self.pom_downloader and comp.group:
+                        download_tasks.append(("pom", comp))
+                    if self.artifact_downloader and comp.group:
+                        for artifact_type in self.artifact_types:
+                            download_tasks.append((artifact_type, comp))
+
+                # npm-specific downloads
+                if is_npm and self.npm_downloader:
+                    download_tasks.append(("npm", comp))
 
             if not download_tasks:
                 self._log("[PARALLEL DOWNLOAD] No download tasks created")
@@ -244,6 +288,8 @@ class ParallelDownloader:
                 for file_type, comp in download_tasks:
                     if file_type == "pom":
                         future = executor.submit(self._download_pom, comp)
+                    elif file_type == "npm":
+                        future = executor.submit(self._download_npm_package, comp)
                     else:
                         future = executor.submit(self._download_artifact, comp, file_type)
                     future_to_task[future] = (file_type, comp)
@@ -260,7 +306,11 @@ class ParallelDownloader:
                             else:
                                 fail_count += 1
                     except Exception as exc:  # pylint: disable=broad-exception-caught
-                        component_id = f"{comp.group}:{comp.name}:{comp.version}"
+                        package_type = extract_package_type(comp.purl) if comp.purl else None
+                        if package_type == "npm":
+                            component_id = f"{comp.name}@{comp.version}"
+                        else:
+                            component_id = f"{comp.group}:{comp.name}:{comp.version}"
                         self._log(f"[PARALLEL DOWNLOAD] ERROR in download task for {component_id}: {exc}")
                         with self._lock:
                             self._results.append((component_id, False, file_type))

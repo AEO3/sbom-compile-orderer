@@ -4,7 +4,7 @@ include LICENSE
 include USAGE.md
 
 # Include example files
-include example_sbom.json
+recursive-include examples *.json
 
 # Include requirements files
 include requirements.txt

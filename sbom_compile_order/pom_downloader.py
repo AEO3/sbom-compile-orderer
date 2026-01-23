@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 
+from sbom_compile_order import __version__
 from sbom_compile_order.parser import Component, build_maven_central_url_from_purl
 
 
@@ -634,11 +635,11 @@ class POMDownloader:
             self._log(f"[POM DOWNLOAD] Executing: urlopen(Request('{pom_url}'), timeout=30)")
 
             req = Request(pom_url)
-            req.add_header("User-Agent", "sbom-compile-order/1.4.1")
+            req.add_header("User-Agent", f"sbom-compile-order/{__version__}")
             req.add_header("Accept", "application/xml, text/xml, */*")
             
             # Log request details
-            self._log(f"[POM DOWNLOAD] Request headers: User-Agent=sbom-compile-order/1.4.1, Accept=application/xml, text/xml, */*")
+            self._log(f"[POM DOWNLOAD] Request headers: User-Agent=sbom-compile-order/{__version__}, Accept=application/xml, text/xml, */*")
             
             # Create SSL context that accepts default certificates
             ssl_context = ssl.create_default_context()
@@ -766,7 +767,7 @@ class POMDownloader:
                         self._log(f"[POM DOWNLOAD] Fallback URL: {fallback_pom_url}")
                         try:
                             fallback_req = Request(fallback_pom_url)
-                            fallback_req.add_header("User-Agent", "sbom-compile-order/1.4.1")
+                            fallback_req.add_header("User-Agent", f"sbom-compile-order/{__version__}")
                             fallback_req.add_header("Accept", "application/xml, text/xml, */*")
                             with urlopen(fallback_req, timeout=30, context=ssl_context) as fallback_response:
                                 if fallback_response.getcode() == 200:
@@ -836,7 +837,7 @@ class POMDownloader:
         self._log(f"[URL USING TO DOWNLOAD] {pom_url}")
         try:
             req = Request(pom_url)
-            req.add_header("User-Agent", "sbom-compile-order/1.4.1")
+            req.add_header("User-Agent", f"sbom-compile-order/{__version__}")
             with urlopen(req, timeout=10) as response:
                 if response.getcode() == 200:
                     return response.read(), False

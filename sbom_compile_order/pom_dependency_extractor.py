@@ -17,7 +17,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-from sbom_compile_order.parser import Component
+from sbom_compile_order.parser import Component, extract_package_type
 from sbom_compile_order.pom_downloader import POMDownloader
 
 # Allow CSV fields larger than default 128KB (e.g. long PURLs, dependency lists in SBOMs)
@@ -518,9 +518,36 @@ class POMDependencyExtractor:
             with open(compile_order_path, "r", encoding="utf-8") as csvfile:
                 reader = csv.DictReader(csvfile)
                 for row in reader:
-                    group_id = row.get("Group ID", "").strip()
-                    package_name = row.get("Package Name", "").strip()
-                    version = row.get("Version/Tag", "").strip()
+                    # Skip rows that represent npm (or other non-Maven) packages.
+                    # NPM leaves do not have POM files, so attempting Maven POM downloads
+                    # for them only generates noise and unnecessary errors.
+                    type_value = (row.get("Type") or "").strip().lower()
+                    purl_value = (row.get("PURL") or "").strip()
+
+                    is_npm = False
+                    if type_value == "npm":
+                        is_npm = True
+                    elif purl_value:
+                        try:
+                            pkg_type = extract_package_type(purl_value)
+                            is_npm = pkg_type == "npm"
+                        except Exception:  # pylint: disable=broad-exception-caught
+                            # If PURL parsing fails, fall back to treating as non-npm.
+                            is_npm = False
+
+                    if is_npm:
+                        # Explicitly skip npm entries – they are handled via npm metadata / downloads.
+                        self._log(
+                            "Skipping POM download for npm package in compile-order.csv: "
+                            f"{(row.get('Group ID') or '').strip()}:"
+                            f"{(row.get('Package Name') or '').strip()}:"
+                            f"{(row.get('Version/Tag') or '').strip()}"
+                        )
+                        continue
+
+                    group_id = (row.get("Group ID") or "").strip()
+                    package_name = (row.get("Package Name") or "").strip()
+                    version = (row.get("Version/Tag") or "").strip()
 
                     if not group_id or not package_name or not version:
                         continue
@@ -538,7 +565,7 @@ class POMDependencyExtractor:
                         group_id_part = group_id
                         artifact_id_part = package_name
 
-                    # Create Component object
+                    # Create Component object (Maven-only)
                     component = Component(
                         {
                             "bom-ref": f"pkg:maven/{group_id_part}/{artifact_id_part}@{version}?type=jar",

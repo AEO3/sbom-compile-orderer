@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from sbom_compile_order import __version__
 from sbom_compile_order.parser import Component
 
 
@@ -370,7 +371,7 @@ class DependencyResolver:
 
         try:
             request = Request(url)
-            request.add_header("User-Agent", "sbom-compile-order/1.4.1")
+            request.add_header("User-Agent", f"sbom-compile-order/{__version__}")
 
             with urlopen(request, timeout=15) as response:
                 html_content = response.read().decode("utf-8")
@@ -421,7 +422,7 @@ class DependencyResolver:
 
         try:
             request = Request(url)
-            request.add_header("User-Agent", "sbom-compile-order/1.4.1")
+            request.add_header("User-Agent", f"sbom-compile-order/{__version__}")
 
             with urlopen(request, timeout=15) as response:
                 html_content = response.read().decode("utf-8")

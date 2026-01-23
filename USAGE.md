@@ -133,6 +133,7 @@ Run `sbom-compile-order --help` for the full list. Summary:
 
 **npm**
 - `--npm`: Download npm package tarballs from the npm registry
+- `--max-workers N`: Max parallel workers for POMs, JARs/WARs, and npm (default: 5)
 
 **Dependencies and POM analysis**
 - `-r, --resolve-dependencies`: Resolve transitive dependencies (mvnrepository.com)
@@ -140,6 +141,9 @@ Run `sbom-compile-order --help` for the full list. Summary:
 - `-e, --extended-csv FILE`: Extended CSV filename in output directory
 - `--leaves`: Extract dependencies from POMs into leaves.csv
 - `--leaves-output FILE`: Leaves CSV filename in output directory
+
+**Environment (performance)**
+- `SBOM_RATE_LIMIT_MVNREPO_SEC`: Override mvnrepository.com delay in seconds (default: 0.5). e.g. `0.1` to speed up `-r`; lower values may hit rate limits.
 
 ## Handling Circular Dependencies
 

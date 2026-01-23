@@ -52,6 +52,7 @@ def _start_parallel_downloads(
     log_file: Path = None,
     verbose: bool = False,
     context: str = "",
+    max_workers: int = 5,
 ) -> Optional["threading.Thread"]:
     """
     Start background downloads for configured POMs, artifacts, and npm packages.
@@ -79,7 +80,7 @@ def _start_parallel_downloads(
         artifact_downloader=package_downloader,
         artifact_types=package_types,
         npm_downloader=npm_downloader,
-        max_workers=5,
+        max_workers=max_workers,
         verbose=verbose,
         log_file=log_file,
     )
@@ -229,6 +230,14 @@ def main() -> None:
         "--npm",
         action="store_true",
         help="Download npm package tarballs from the npm registry",
+    )
+
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=5,
+        metavar="N",
+        help="Maximum number of parallel download workers for POMs, JARs/WARs, and npm (default: 5)",
     )
 
     parser.add_argument(
@@ -880,6 +889,7 @@ def main() -> None:
                     log_file,
                     args.verbose,
                     "while enhanced.csv is being created",
+                    args.max_workers,
                 )
                 
                 # Pass pom_downloader to enhanced CSV so POM downloads happen there, not in compile-order.csv
@@ -963,6 +973,7 @@ def main() -> None:
                 log_file,
                 args.verbose,
                 "after compile-order.csv creation",
+                args.max_workers,
             )
             _wait_for_parallel_downloads(package_download_thread, log_file, args.verbose)
 

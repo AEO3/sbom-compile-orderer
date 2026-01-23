@@ -6,6 +6,7 @@ a comprehensive dependency list including transitive dependencies.
 """
 
 import csv
+import os
 import re
 import sys
 import time
@@ -150,6 +151,10 @@ class DependencyResolver:
         """
         self.verbose = verbose
         self._last_request_time = 0.0
+        try:
+            self._rate_limit_delay = float(os.environ.get("SBOM_RATE_LIMIT_MVNREPO_SEC", "0.5"))
+        except (TypeError, ValueError):
+            self._rate_limit_delay = self.RATE_LIMIT_DELAY
         self._cache: Dict[str, List[Tuple[str, str, str]]] = {}
         self._visited: Set[str] = set()
         self.extended_csv_path = extended_csv_path
@@ -312,11 +317,12 @@ class DependencyResolver:
     def _rate_limit(self) -> None:
         """
         Enforce rate limiting between requests.
+        Uses SBOM_RATE_LIMIT_MVNREPO_SEC env var if set (default 0.5).
         """
         current_time = time.time()
         time_since_last = current_time - self._last_request_time
-        if time_since_last < self.RATE_LIMIT_DELAY:
-            time.sleep(self.RATE_LIMIT_DELAY - time_since_last)
+        if time_since_last < self._rate_limit_delay:
+            time.sleep(self._rate_limit_delay - time_since_last)
         self._last_request_time = time.time()
 
     def _get_dependencies_page_url(

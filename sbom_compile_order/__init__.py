@@ -15,4 +15,4 @@ import sys
 # this package before using csv.
 csv.field_size_limit(sys.maxsize)
 
-__version__ = "1.10.0"
+__version__ = "1.12.0"

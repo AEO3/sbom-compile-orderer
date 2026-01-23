@@ -360,10 +360,11 @@ This tool is particularly useful when:
 
 ## Performance and tuning
 
-On multi-core machines (e.g. 16 vCPU / 16 GB RAM), these settings help:
+On multi-core machines (e.g. 16 vCPU / 16 GB RAM), these settings help:
 
-- **`--max-workers 14`** (or 12–16): more parallel POM, JAR/WAR, and npm downloads. Default is 5.
-- **`SBOM_RATE_LIMIT_MVNREPO_SEC`**: when using `-r` (mvnrepository.com), the default 0.5 s delay between requests can be reduced, e.g. `SBOM_RATE_LIMIT_MVNREPO_SEC=0.1`. Lower values may trigger rate limiting.
+- **`--max-workers 14`** (or 12–16): more parallel POM, JAR/WAR, and npm downloads; also parallelizes enhanced CSV row processing and `-r` metadata prefetch. Default is 5.
+- **Worker split**: when both `-r` and `--poms`/`--pull-package`/`--npm` are used, workers are split (e.g. `--max-workers 16` → 8 for downloads + enhanced CSV, 8 for `-r`). When `-m` and `--poms`/`--pull-package`/`--npm` run together, the phase‑1 workers are split between the parallel downloader and enhanced CSV.
+- **`SBOM_RATE_LIMIT_MVNREPO_SEC`**: when using `-r` (mvnrepository.com), the default 0.5 s delay between requests can be reduced, e.g. `SBOM_RATE_LIMIT_MVNREPO_SEC=0.1`. Lower values may trigger rate limiting.
 - **Run from the WSL2 Linux filesystem** (e.g. `~/` or `/home/`) rather than `/mnt/c` for faster I/O.
 - **Only enable what you need**: omit `-m`, `-r`, `--poms`, `--leaves`, or `--npm` when you do not need that output to avoid extra work.
 

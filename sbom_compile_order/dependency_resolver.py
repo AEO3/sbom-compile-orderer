@@ -9,10 +9,12 @@ import csv
 import os
 import re
 import sys
+import threading
 import time
 
 # Allow CSV fields larger than default 128KB (e.g. long PURLs, dependency lists in SBOMs)
 csv.field_size_limit(sys.maxsize)
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -753,7 +755,10 @@ class DependencyResolver:
         return result
 
     def resolve_from_compile_order_csv(
-        self, compile_order_csv_path: Path, max_depth: int = 2
+        self,
+        compile_order_csv_path: Path,
+        max_depth: int = 2,
+        max_workers: int = 1,
     ) -> None:
         """
         Resolve dependencies from compile-order.csv file.
@@ -766,6 +771,7 @@ class DependencyResolver:
         Args:
             compile_order_csv_path: Path to compile-order.csv file
             max_depth: Maximum depth to traverse dependencies (default: 2)
+            max_workers: When >1, prefetches license/homepage in parallel for top-level rows
         """
         if not self.extended_csv_path:
             if self.verbose:
@@ -837,6 +843,64 @@ class DependencyResolver:
         self._visited.clear()
         self._visited.update(compile_order_packages)
 
+        # Prefetch license/homepage in parallel when max_workers > 1
+        metadata_cache: Dict[Tuple[str, str, str], Tuple[str, str]] = {}
+
+        def _parse_row(r: Dict[str, str]) -> Optional[Tuple[str, str, str, str, str]]:
+            gid = r.get("Group ID", "")
+            pn = r.get("Package Name", "")
+            ver = r.get("Version/Tag", "")
+            if not gid or not pn:
+                return None
+            if ":" in gid:
+                parts = gid.split(":")
+                group = parts[0]
+                artifact = parts[1] if len(parts) >= 2 else pn
+            else:
+                group = gid
+                artifact = pn
+            return (group, artifact, ver, r.get("Homepage URL", ""), r.get("License Type", ""))
+
+        if max_workers > 1:
+            parsed = [_parse_row(r) for r in compile_order_rows]
+            need_fetch = [
+                (g, a, v)
+                for (g, a, v, hp, lic) in (p for p in parsed if p)
+                if v and (not hp or not lic)
+            ]
+            if need_fetch:
+                resolvers = [
+                    DependencyResolver(verbose=self.verbose, extended_csv_path=None)
+                    for _ in range(max_workers)
+                ]
+                cache_lock = threading.Lock()
+
+                def _prefetch(worker_id: int, items: List[Tuple[str, str, str]]) -> None:
+                    for (g, a, v) in items:
+                        try:
+                            lic_val, hp_val = resolvers[worker_id].get_license_and_homepage(
+                                g, a, v
+                            )
+                            with cache_lock:
+                                metadata_cache[(g, a, v)] = (lic_val or "", hp_val or "")
+                        except Exception:  # pylint: disable=broad-exception-caught
+                            with cache_lock:
+                                metadata_cache[(g, a, v)] = ("", "")
+
+                step = max(1, (len(need_fetch) + max_workers - 1) // max_workers)
+                partitions = [
+                    need_fetch[i * step : (i + 1) * step]
+                    for i in range(max_workers)
+                ]
+                with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                    futures = [
+                        ex.submit(_prefetch, i, part)
+                        for i, part in enumerate(partitions)
+                        if part
+                    ]
+                    for fut in as_completed(futures):
+                        fut.result()
+
         # Initialize extended CSV (always overwrite when reading from compile-order.csv)
         self._init_extended_csv(overwrite=True)
 
@@ -877,8 +941,15 @@ class DependencyResolver:
             provided_url = row.get("Provided URL", "")
             repo_url = row.get("Repo URL", "")
 
-            # Fetch metadata if not already present
-            if version and (not homepage_url or not license_type):
+            # Use prefetched metadata or fetch if not already present
+            cache_key = (group, artifact, version)
+            if cache_key in metadata_cache:
+                lic_val, hp_val = metadata_cache[cache_key]
+                if hp_val and not homepage_url:
+                    homepage_url = hp_val
+                if lic_val and not license_type:
+                    license_type = lic_val
+            elif version and (not homepage_url or not license_type):
                 try:
                     license, homepage = self.get_license_and_homepage(
                         group, artifact, version

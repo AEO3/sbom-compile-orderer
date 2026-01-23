@@ -350,7 +350,25 @@ def main() -> None:
             _log_to_file(log_msg, log_file)
             if args.verbose:
                 print(log_msg, file=sys.stderr)
-    
+
+    # Compute worker split when -r and (--poms or --pull-package or --npm) are both used
+    has_parallel_dl = args.poms or args.pull_package or args.npm
+    has_enhanced = args.maven_central_lookup
+    has_resolve = args.resolve_dependencies
+    n = max(1, args.max_workers)
+    if has_resolve and has_parallel_dl:
+        resolve_workers = max(1, n // 2)
+        phase1_workers = max(1, n - resolve_workers)
+    else:
+        resolve_workers = n
+        phase1_workers = n
+    if has_enhanced and has_parallel_dl:
+        enhanced_workers = max(1, phase1_workers // 2)
+        parallel_dl_workers = max(1, phase1_workers - enhanced_workers)
+    else:
+        enhanced_workers = phase1_workers
+        parallel_dl_workers = phase1_workers
+
     # Log program start
     log_msg = f"Starting sbom-compile-order v{__import__('sbom_compile_order').__version__}"
     _log_to_file(log_msg, log_file)
@@ -879,7 +897,7 @@ def main() -> None:
                 if args.verbose:
                     print(log_msg, file=sys.stderr)
                 
-                # Start parallel background downloads if requested
+                # Start parallel background downloads if requested (uses parallel_dl_workers when split)
                 parallel_download_thread = _start_parallel_downloads(
                     compile_order_path,
                     pom_downloader if args.poms else None,
@@ -889,21 +907,19 @@ def main() -> None:
                     log_file,
                     args.verbose,
                     "while enhanced.csv is being created",
-                    args.max_workers,
+                    parallel_dl_workers,
                 )
                 
-                # Pass pom_downloader to enhanced CSV so POM downloads happen there, not in compile-order.csv
-                # Also pass hash_cache for incremental updates
-                # Note: Enhanced CSV will still do downloads sequentially, but parallel downloads
-                # run in background and will be available when enhanced CSV checks for them
+                # Pass pom_downloader and enhanced_workers; enhanced CSV runs in parallel when workers > 1
                 create_enhanced_csv(
                     compile_order_path,
                     enhanced_csv_path,
                     package_metadata_client,
-                    pom_downloader=pom_downloader,  # POM downloads happen in enhanced.csv
+                    pom_downloader=pom_downloader,
                     verbose=args.verbose,
                     log_file=log_file,
-                    hash_cache=hash_cache,  # Pass hash cache for incremental updates
+                    hash_cache=hash_cache,
+                    max_workers=enhanced_workers,
                 )
                 
                 _wait_for_parallel_downloads(parallel_download_thread, log_file, args.verbose)
@@ -973,7 +989,7 @@ def main() -> None:
                 log_file,
                 args.verbose,
                 "after compile-order.csv creation",
-                args.max_workers,
+                parallel_dl_workers,
             )
             _wait_for_parallel_downloads(package_download_thread, log_file, args.verbose)
 
@@ -1064,9 +1080,11 @@ def main() -> None:
                 if args.verbose:
                     print(log_msg, file=sys.stderr)
 
-                # Resolve dependencies from compile-order.csv
+                # Resolve dependencies from compile-order.csv (uses resolve_workers when split)
                 dependency_resolver.resolve_from_compile_order_csv(
-                    compile_order_path, max_depth=args.max_dependency_depth
+                    compile_order_path,
+                    max_depth=args.max_dependency_depth,
+                    max_workers=resolve_workers,
                 )
 
                 # Log extended CSV information

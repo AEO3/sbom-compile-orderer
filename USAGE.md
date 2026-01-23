@@ -145,6 +145,8 @@ Run `sbom-compile-order --help` for the full list. Summary:
 **Environment (performance)**
 - `SBOM_RATE_LIMIT_MVNREPO_SEC`: Override mvnrepository.com delay in seconds (default: 0.5). e.g. `0.1` to speed up `-r`; lower values may hit rate limits.
 
+**Worker split:** `--max-workers` is reused for parallel POM/JAR/npm downloads, enhanced CSV row processing, and `-r` metadata prefetch. When both `-r` and `--poms`/`--pull-package`/`--npm` are used, workers are split between the download phase and the resolve phase.
+
 ## Handling Circular Dependencies
 
 If circular dependencies are detected, the tool will:

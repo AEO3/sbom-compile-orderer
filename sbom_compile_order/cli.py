@@ -910,12 +910,13 @@ def main() -> None:
                     parallel_dl_workers,
                 )
                 
-                # Pass pom_downloader and enhanced_workers; enhanced CSV runs in parallel when workers > 1
+                # Pass pom_downloader, package_downloader, and enhanced_workers; enhanced CSV runs in parallel when workers > 1
                 create_enhanced_csv(
                     compile_order_path,
                     enhanced_csv_path,
                     package_metadata_client,
                     pom_downloader=pom_downloader,
+                    package_downloader=package_downloader if args.pull_package else None,
                     verbose=args.verbose,
                     log_file=log_file,
                     hash_cache=hash_cache,

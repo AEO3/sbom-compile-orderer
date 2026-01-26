@@ -25,6 +25,61 @@ from sbom_compile_order.output import extract_repo_url
 csv.field_size_limit(sys.maxsize)
 
 
+def _generate_cache_key(component: Component) -> str:
+    """
+    Generate cache key from component identifier (matching downloader logic).
+
+    Args:
+        component: Component object
+
+    Returns:
+        Cache key string suitable for filename
+    """
+    identifier = component.get_identifier()
+    # Remove query parameters (everything after ?)
+    if "?" in identifier:
+        identifier = identifier.split("?")[0]
+    # Remove URL fragments (everything after #)
+    if "#" in identifier:
+        identifier = identifier.split("#")[0]
+    # Replace problematic characters for filename
+    cache_key = identifier.replace("/", "_").replace(":", "_").replace("@", "_")
+    return cache_key
+
+
+def _check_file_on_disk(
+    component: Component,
+    cache_dir: Path,
+    subdirectory: str,
+    extension: str,
+) -> Optional[Tuple[str, str]]:
+    """
+    Check if a file exists on disk for a component, even if CSV says it wasn't downloaded.
+
+    Args:
+        component: Component object
+        cache_dir: Base cache directory
+        subdirectory: Subdirectory name (e.g., "poms", "jars")
+        extension: File extension (e.g., "pom", "jar", "war")
+
+    Returns:
+        Tuple of (filename, relative_path) if found, None otherwise
+    """
+    if not component.group or not component.name or not component.version:
+        return None
+    
+    cache_key = _generate_cache_key(component)
+    file_cache_dir = cache_dir / subdirectory
+    expected_file = file_cache_dir / f"{cache_key}.{extension}"
+    
+    if expected_file.exists():
+        filename = expected_file.name
+        relative_path = f"./{subdirectory}/{filename}"
+        return (filename, relative_path)
+    
+    return None
+
+
 def _normalize_npm_repo_url(url: str) -> str:
     """
     Normalize npm repository URL by removing git+ prefixes and converting to https://.
@@ -257,28 +312,26 @@ def _process_one_row(
     header = ctx["header"]
     compile_order_csv_path = ctx["compile_order_csv_path"]
     pom_cache_dir = ctx["pom_cache_dir"]
-    pom_downloader = ctx["pom_downloader"]
+    pom_downloader = ctx.get("pom_downloader")
+    package_downloader = ctx.get("package_downloader")
     pom_lock = ctx["pom_lock"]
     downloaded_col_idx = len(header)
     file_location_col_idx = downloaded_col_idx + 1
+    jar_downloaded_col_idx = downloaded_col_idx + 4  # After POM URL (18) and JAR URL (19)
+    jar_file_location_col_idx = jar_downloaded_col_idx + 1
     existing_downloaded_status = ""
     existing_file_location = ""
+    existing_jar_downloaded_status = ""
+    existing_jar_file_location = ""
     if existing_row_entry and len(existing_row_entry) > downloaded_col_idx:
         existing_downloaded_status = existing_row_entry[downloaded_col_idx]
         if len(existing_row_entry) > file_location_col_idx:
             existing_file_location = existing_row_entry[file_location_col_idx]
-    skip_pom_download = False
-    if pom_downloader and existing_downloaded_status.lower() == "yes" and existing_file_location:
-        relative_path = existing_file_location.lstrip("./")
-        existing_file_path = compile_order_csv_path.parent / relative_path
-        if existing_file_path.exists():
-            pom_filename = existing_file_path.name
-            downloaded_status = "yes"
-            file_location = existing_file_location
-            skip_pom_download = True
-        else:
-            log(f"Previously recorded POM missing on disk, will re-download: {existing_file_location}")
-
+        if len(existing_row_entry) > jar_downloaded_col_idx:
+            existing_jar_downloaded_status = existing_row_entry[jar_downloaded_col_idx]
+        if len(existing_row_entry) > jar_file_location_col_idx:
+            existing_jar_file_location = existing_row_entry[jar_file_location_col_idx]
+    # Initialize variables
     pom_filename = ""
     auth_required = ""
     downloaded_status = ""
@@ -286,6 +339,72 @@ def _process_one_row(
     repo_url_from_pom = ""
     repo_url = row[9] if len(row) > 9 else ""
     repo_url_from_npm = ""  # set in metadata block above when is_npm and get_comprehensive_npm_data
+    
+    # Check disk for POM file (backwards compatibility - update CSV to reflect reality)
+    skip_pom_download = False
+    if is_maven and comp.group and comp.name and comp.version:
+        # First check if CSV says it was downloaded
+        if existing_downloaded_status.lower() == "yes" and existing_file_location:
+            relative_path = existing_file_location.lstrip("./")
+            existing_file_path = compile_order_csv_path.parent / relative_path
+            if existing_file_path.exists():
+                pom_filename = existing_file_path.name
+                downloaded_status = "yes"
+                file_location = existing_file_location
+                skip_pom_download = True
+            else:
+                # CSV says downloaded but file is missing - update status to reflect reality
+                downloaded_status = "File missing (previously recorded)"
+                file_location = ""
+                log(f"Previously recorded POM missing on disk: {existing_file_location} - will attempt re-download")
+        
+        # If not found via CSV, check disk directly (backwards compatibility)
+        if not skip_pom_download and not downloaded_status:
+            disk_check = _check_file_on_disk(comp, compile_order_csv_path.parent, "poms", "pom")
+            if disk_check:
+                pom_filename, file_location = disk_check
+                downloaded_status = "yes"
+                skip_pom_download = True
+                log(f"Found POM on disk (not in CSV): {pom_filename} for {group}:{artifact}:{version}")
+    
+    # Check disk for JAR file (backwards compatibility - update CSV to reflect reality)
+    skip_jar_download = False
+    jar_downloaded_status = ""
+    jar_file_location = ""
+    jar_filename = ""
+    if is_maven and comp.group and comp.name and comp.version:
+        # First check if CSV says it was downloaded
+        if existing_jar_downloaded_status.lower() == "yes" and existing_jar_file_location:
+            relative_path = existing_jar_file_location.lstrip("./")
+            existing_jar_file_path = compile_order_csv_path.parent / relative_path
+            if existing_jar_file_path.exists():
+                jar_filename = existing_jar_file_path.name
+                jar_downloaded_status = "yes"
+                jar_file_location = existing_jar_file_location
+                skip_jar_download = True
+            else:
+                # CSV says downloaded but file is missing - update status to reflect reality
+                jar_downloaded_status = "File missing (previously recorded)"
+                jar_file_location = ""
+                log(f"Previously recorded JAR missing on disk: {existing_jar_file_location} - will attempt re-download")
+        
+        # If not found via CSV, check disk directly (backwards compatibility)
+        if not skip_jar_download and not jar_downloaded_status:
+            disk_check = _check_file_on_disk(comp, compile_order_csv_path.parent, "jars", "jar")
+            if disk_check:
+                jar_filename, jar_file_location = disk_check
+                jar_downloaded_status = "yes"
+                skip_jar_download = True
+                log(f"Found JAR on disk (not in CSV): {jar_filename} for {group}:{artifact}:{version}")
+        
+        # Also check for WAR files if package_downloader supports it
+        if package_downloader and not skip_jar_download and not jar_downloaded_status:
+            war_check = _check_file_on_disk(comp, compile_order_csv_path.parent, "jars", "war")
+            if war_check:
+                jar_filename, jar_file_location = war_check
+                jar_downloaded_status = "yes"
+                skip_jar_download = True
+                log(f"Found WAR on disk (not in CSV): {jar_filename} for {group}:{artifact}:{version}")
 
     if pom_downloader and is_maven and comp.group and comp.name and comp.version and not skip_pom_download:
         try:
@@ -325,6 +444,37 @@ def _process_one_row(
             downloaded_status = "Missing version"
         else:
             downloaded_status = "Not attempted"
+    
+    # Download JAR file if package_downloader is provided (only for Maven packages)
+    jar_filename = ""
+    jar_auth_required = False
+    if package_downloader and is_maven and comp.group and comp.name and comp.version and not skip_jar_download:
+        try:
+            jar_result, jar_auth_req = package_downloader.download_package(comp, artifact_type="jar")
+            jar_filename = jar_result or ""
+            jar_auth_required = jar_auth_req
+            if jar_filename:
+                jar_downloaded_status = "yes"
+                jar_file_location = f"./jars/{jar_filename}"
+                log(f"Downloaded JAR for {group}:{artifact}:{version}: {jar_filename}")
+            elif jar_auth_req:
+                jar_downloaded_status = "Authentication required"
+                log(f"Authentication required for JAR download: {group}:{artifact}:{version}")
+            else:
+                jar_downloaded_status = "Failed to download (not found or unavailable)"
+                log(f"JAR download failed for {group}:{artifact}:{version}: not found or unavailable")
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            jar_downloaded_status = f"Error: {str(exc)}"
+            log_warn(f"[WARNING] Failed to download JAR for {group}:{artifact}:{version}: {exc}")
+    elif package_downloader and not skip_jar_download:
+        if not comp.group or not comp.name:
+            jar_downloaded_status = "Missing group or artifact name"
+        elif not comp.version:
+            jar_downloaded_status = "Missing version"
+        elif not is_maven:
+            jar_downloaded_status = "Not a Maven package"
+        else:
+            jar_downloaded_status = "Not attempted"
 
     while len(row) < 17:
         row.append("")
@@ -357,16 +507,23 @@ def _process_one_row(
         row[14] = license_type
     elif use_existing_data and existing_row_data and len(existing_row_data) > 14:
         row[14] = existing_row_data[14]
-    if use_existing_data and existing_row_data and len(existing_row_data) > 19 and not pom_downloader:
+    # Add columns: Downloaded (POM), File Location (POM), POM URL, JAR URL, JAR Downloaded, JAR File Location
+    if use_existing_data and existing_row_data and len(existing_row_data) > 21 and not pom_downloader and not package_downloader:
+        # Incremental mode, no downloaders - preserve all existing data
         row.append(existing_row_data[16] if len(existing_row_data) > 16 else downloaded_status)
         row.append(existing_row_data[17] if len(existing_row_data) > 17 else file_location)
         row.append(existing_row_data[18] if len(existing_row_data) > 18 else pom_url_maven)
         row.append(existing_row_data[19] if len(existing_row_data) > 19 else jar_url_maven)
+        row.append(existing_row_data[20] if len(existing_row_data) > 20 else jar_downloaded_status)
+        row.append(existing_row_data[21] if len(existing_row_data) > 21 else jar_file_location)
     else:
+        # Use new values (either from download check or defaults)
         row.append(downloaded_status)
         row.append(file_location)
         row.append(pom_url_maven)
         row.append(jar_url_maven)
+        row.append(jar_downloaded_status)
+        row.append(jar_file_location)
     return (idx, row)
 
 
@@ -375,6 +532,7 @@ def create_enhanced_csv(
     enhanced_csv_path: Path,
     metadata_client: Optional[PackageMetadataClient],
     pom_downloader=None,
+    package_downloader=None,
     verbose: bool = False,
     log_file: Optional[Path] = None,
     hash_cache=None,
@@ -391,6 +549,7 @@ def create_enhanced_csv(
         enhanced_csv_path: Path where enhanced.csv will be written
         metadata_client: PackageMetadataClient instance for lookups
         pom_downloader: Optional POMDownloader instance for downloading POM files
+        package_downloader: Optional PackageDownloader instance for downloading JAR files
         verbose: Whether to print verbose output
         log_file: Optional path to log file for logging actions
         hash_cache: Optional HashCache instance for checking if incremental update is needed
@@ -483,8 +642,8 @@ def create_enhanced_csv(
         enhanced_file = open(enhanced_csv_path, "w", encoding="utf-8", newline="")
     writer = csv.writer(enhanced_file)
     
-    # Write header - add new columns "Downloaded", "File Location", "POM URL", and "JAR URL" to the end
-    enhanced_header = list(header) + ["Downloaded", "File Location", "POM URL", "JAR URL"]
+    # Write header - add new columns "Downloaded", "File Location", "POM URL", "JAR URL", "JAR Downloaded", and "JAR File Location" to the end
+    enhanced_header = list(header) + ["Downloaded", "File Location", "POM URL", "JAR URL", "JAR Downloaded", "JAR File Location"]
     writer.writerow(enhanced_header)
     enhanced_file.flush()
     os.fsync(enhanced_file.fileno())
@@ -672,36 +831,21 @@ def create_enhanced_csv(
             # Determine if we already have the POM downloaded (even if enhanced.csv is stale)
             downloaded_col_idx = len(header)
             file_location_col_idx = downloaded_col_idx + 1
+            jar_downloaded_col_idx = downloaded_col_idx + 4  # After POM URL (18) and JAR URL (19)
+            jar_file_location_col_idx = jar_downloaded_col_idx + 1
             existing_downloaded_status = ""
             existing_file_location = ""
+            existing_jar_downloaded_status = ""
+            existing_jar_file_location = ""
             if existing_row_entry and len(existing_row_entry) > downloaded_col_idx:
                 existing_downloaded_status = existing_row_entry[downloaded_col_idx]
                 if len(existing_row_entry) > file_location_col_idx:
                     existing_file_location = existing_row_entry[file_location_col_idx]
-            skip_pom_download = False
-            if (
-                pom_downloader
-                and existing_downloaded_status.lower() == "yes"
-                and existing_file_location
-            ):
-                relative_path = existing_file_location.lstrip("./")
-                existing_file_path = compile_order_csv_path.parent / relative_path
-                if existing_file_path.exists():
-                    pom_filename = existing_file_path.name
-                    downloaded_status = "yes"
-                    file_location = existing_file_location
-                    skip_pom_download = True
-                else:
-                    log_msg = (
-                        f"Previously recorded POM missing on disk, will re-download: "
-                        f"{existing_file_location}"
-                    )
-                    _log_to_file(log_msg, log_file)
-                    if verbose:
-                        print(f"[INFO] {log_msg}", file=sys.stderr)
-            
-            # Download POM file if pom_downloader is provided
-            # In incremental mode, always check POM download status to update if needed
+                if len(existing_row_entry) > jar_downloaded_col_idx:
+                    existing_jar_downloaded_status = existing_row_entry[jar_downloaded_col_idx]
+                if len(existing_row_entry) > jar_file_location_col_idx:
+                    existing_jar_file_location = existing_row_entry[jar_file_location_col_idx]
+            # Initialize variables
             pom_filename = ""
             auth_required = ""
             downloaded_status = ""
@@ -709,6 +853,113 @@ def create_enhanced_csv(
             repo_url_from_pom = ""  # Will be extracted from POM file
             repo_url = row[9] if len(row) > 9 else ""  # Repo URL is in column 9 (original from SBOM)
             repo_url_from_npm = ""  # Will be extracted from npm package data (normalized to https://)
+            
+            # Check disk for POM file (backwards compatibility - update CSV to reflect reality)
+            skip_pom_download = False
+            if is_maven and comp.group and comp.name and comp.version:
+                # First check if CSV says it was downloaded
+                if (
+                    pom_downloader
+                    and existing_downloaded_status.lower() == "yes"
+                    and existing_file_location
+                ):
+                    relative_path = existing_file_location.lstrip("./")
+                    existing_file_path = compile_order_csv_path.parent / relative_path
+                    if existing_file_path.exists():
+                        pom_filename = existing_file_path.name
+                        downloaded_status = "yes"
+                        file_location = existing_file_location
+                        skip_pom_download = True
+                    else:
+                        # CSV says downloaded but file is missing - update status to reflect reality
+                        downloaded_status = "File missing (previously recorded)"
+                        file_location = ""
+                        log_msg = (
+                            f"Previously recorded POM missing on disk: {existing_file_location} - "
+                            f"will attempt re-download"
+                        )
+                        _log_to_file(log_msg, log_file)
+                        if verbose:
+                            print(f"[INFO] {log_msg}", file=sys.stderr)
+                
+                # If not found via CSV, check disk directly (backwards compatibility)
+                if not skip_pom_download and not downloaded_status:
+                    disk_check = _check_file_on_disk(comp, compile_order_csv_path.parent, "poms", "pom")
+                    if disk_check:
+                        pom_filename, file_location = disk_check
+                        downloaded_status = "yes"
+                        skip_pom_download = True
+                        log_msg = (
+                            f"Found POM on disk (not in CSV): {pom_filename} for "
+                            f"{group}:{artifact}:{version}"
+                        )
+                        _log_to_file(log_msg, log_file)
+                        if verbose:
+                            print(f"[INFO] {log_msg}", file=sys.stderr)
+            
+            # Check disk for JAR/WAR files (backwards compatibility - update CSV to reflect reality)
+            skip_jar_download = False
+            jar_downloaded_status = ""
+            jar_file_location = ""
+            jar_filename = ""
+            if is_maven and comp.group and comp.name and comp.version:
+                # First check if CSV says it was downloaded
+                if (
+                    package_downloader
+                    and existing_jar_downloaded_status.lower() == "yes"
+                    and existing_jar_file_location
+                ):
+                    relative_path = existing_jar_file_location.lstrip("./")
+                    existing_jar_file_path = compile_order_csv_path.parent / relative_path
+                    if existing_jar_file_path.exists():
+                        jar_filename = existing_jar_file_path.name
+                        jar_downloaded_status = "yes"
+                        jar_file_location = existing_jar_file_location
+                        skip_jar_download = True
+                    else:
+                        # CSV says downloaded but file is missing - update status to reflect reality
+                        jar_downloaded_status = "File missing (previously recorded)"
+                        jar_file_location = ""
+                        log_msg = (
+                            f"Previously recorded JAR missing on disk: {existing_jar_file_location} - "
+                            f"will attempt re-download"
+                        )
+                        _log_to_file(log_msg, log_file)
+                        if verbose:
+                            print(f"[INFO] {log_msg}", file=sys.stderr)
+                
+                # If not found via CSV, check disk directly (backwards compatibility)
+                if not skip_jar_download and not jar_downloaded_status:
+                    # Check for JAR
+                    disk_check = _check_file_on_disk(comp, compile_order_csv_path.parent, "jars", "jar")
+                    if disk_check:
+                        jar_filename, jar_file_location = disk_check
+                        jar_downloaded_status = "yes"
+                        skip_jar_download = True
+                        log_msg = (
+                            f"Found JAR on disk (not in CSV): {jar_filename} for "
+                            f"{group}:{artifact}:{version}"
+                        )
+                        _log_to_file(log_msg, log_file)
+                        if verbose:
+                            print(f"[INFO] {log_msg}", file=sys.stderr)
+                    else:
+                        # Also check for WAR files
+                        war_check = _check_file_on_disk(comp, compile_order_csv_path.parent, "jars", "war")
+                        if war_check:
+                            jar_filename, jar_file_location = war_check
+                            jar_downloaded_status = "yes"
+                            skip_jar_download = True
+                            log_msg = (
+                                f"Found WAR on disk (not in CSV): {jar_filename} for "
+                                f"{group}:{artifact}:{version}"
+                            )
+                            _log_to_file(log_msg, log_file)
+                            if verbose:
+                                print(f"[INFO] {log_msg}", file=sys.stderr)
+            
+            # Download POM file if pom_downloader is provided
+            # In incremental mode, always check POM download status to update if needed
             
             # Always check POM download status if pom_downloader is available (only for Maven packages)
             # This ensures download status is up-to-date even in incremental mode
@@ -804,6 +1055,61 @@ def create_enhanced_csv(
                     downloaded_status = "Missing version"
                 else:
                     downloaded_status = "Not attempted"
+            
+            # Download JAR file if package_downloader is provided (only for Maven packages)
+            jar_filename = ""
+            jar_auth_required = False
+            if package_downloader and is_maven and comp.group and comp.name and comp.version and not skip_jar_download:
+                try:
+                    jar_result, jar_auth_req = package_downloader.download_package(comp, artifact_type="jar")
+                    jar_filename = jar_result or ""
+                    jar_auth_required = jar_auth_req
+                    if jar_filename:
+                        jar_downloaded_status = "yes"
+                        jar_file_location = f"./jars/{jar_filename}"
+                        log_msg = (
+                            f"Downloaded JAR for {group}:{artifact}:{version}: {jar_filename}"
+                        )
+                        _log_to_file(log_msg, log_file)
+                        if verbose:
+                            print(f"[INFO] {log_msg}", file=sys.stderr)
+                    elif jar_auth_req:
+                        jar_downloaded_status = "Authentication required"
+                        log_msg = (
+                            f"Authentication required for JAR download: "
+                            f"{group}:{artifact}:{version}"
+                        )
+                        _log_to_file(log_msg, log_file)
+                        if verbose:
+                            print(f"[INFO] {log_msg}", file=sys.stderr)
+                    else:
+                        jar_downloaded_status = "Failed to download (not found or unavailable)"
+                        log_msg = (
+                            f"JAR download failed for {group}:{artifact}:{version}: "
+                            f"not found or unavailable"
+                        )
+                        _log_to_file(log_msg, log_file)
+                        if verbose:
+                            print(f"[INFO] {log_msg}", file=sys.stderr)
+                except Exception as exc:  # pylint: disable=broad-exception-caught
+                    error_msg = str(exc)
+                    jar_downloaded_status = f"Error: {error_msg}"
+                    log_msg = (
+                        f"[WARNING] Failed to download JAR for {group}:{artifact}:{version}: {exc}"
+                    )
+                    _log_to_file(log_msg, log_file)
+                    if verbose:
+                        print(log_msg, file=sys.stderr)
+            elif package_downloader and not skip_jar_download:
+                # Package downloader available but missing required component data
+                if not comp.group or not comp.name:
+                    jar_downloaded_status = "Missing group or artifact name"
+                elif not comp.version:
+                    jar_downloaded_status = "Missing version"
+                elif not is_maven:
+                    jar_downloaded_status = "Not a Maven package"
+                else:
+                    jar_downloaded_status = "Not attempted"
     
             # Enhance the row - update Homepage URL, License Type, POM, AUTH, Downloaded, and File Location columns
             # Ensure row has enough columns (17 columns from compile-order.csv)
@@ -866,21 +1172,25 @@ def create_enhanced_csv(
             elif use_existing_data and existing_row_data and len(existing_row_data) > 14:
                 row[14] = existing_row_data[14]  # Preserve existing License Type
             
-            # Add new columns: Downloaded (16), File Location (17), POM URL (18), and JAR URL (19)
+            # Add new columns: Downloaded (16), File Location (17), POM URL (18), JAR URL (19), JAR Downloaded (20), JAR File Location (21)
             # In incremental mode with existing data, preserve existing values if we didn't check downloads
             # Otherwise use new values (either from download check or empty if no downloader)
-            if use_existing_data and existing_row_data and len(existing_row_data) > 19 and not pom_downloader:
+            if use_existing_data and existing_row_data and len(existing_row_data) > 21 and not pom_downloader and not package_downloader:
                 # Incremental mode, no downloader - preserve all existing data
                 row.append(existing_row_data[16] if len(existing_row_data) > 16 else downloaded_status)
                 row.append(existing_row_data[17] if len(existing_row_data) > 17 else file_location)
                 row.append(existing_row_data[18] if len(existing_row_data) > 18 else pom_url_maven)
                 row.append(existing_row_data[19] if len(existing_row_data) > 19 else jar_url_maven)
+                row.append(existing_row_data[20] if len(existing_row_data) > 20 else jar_downloaded_status)
+                row.append(existing_row_data[21] if len(existing_row_data) > 21 else jar_file_location)
             else:
                 # Use new values (either from download check or defaults)
                 row.append(downloaded_status)
                 row.append(file_location)
                 row.append(pom_url_maven)
                 row.append(jar_url_maven)
+                row.append(jar_downloaded_status)
+                row.append(jar_file_location)
     
             # Write row immediately and flush to disk for tailing
             writer.writerow(row)
@@ -904,6 +1214,7 @@ def create_enhanced_csv(
         )
         ctx = {
             "pom_downloader": pom_downloader,
+            "package_downloader": package_downloader,
             "pom_lock": pom_lock,
             "log_lock": log_lock,
             "log_file": log_file,
